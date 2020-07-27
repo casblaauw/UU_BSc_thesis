@@ -285,7 +285,233 @@ for (row in 1:nrow(gexp.rec.nd)) {
 }
 write.csv(rf.all.rec, file = "RF_recgenes.csv")
 
+### Analyse all eQTLs genome-wide --------------------------------------------------------------------------------------
+## Prepare genome-wide data/functions -----------------------
 
+#Function to create a full dataset with gene/marker locations from eQTL pairs
+qtlGenome <- function(df, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata = mrk.info){
+  qtl_GxM <- df[,-1] #Separate the gene x marker matrix
+  qtl_GxPrax <- df[,1]# from the gene x developmental axis data
+  qtl_GxPrax <- rownames_to_column(data.frame(qtl_GxPrax))
+  colnames(qtl_GxPrax) <- c("geneid", "devImportance")
+  
+  qtl_pairs <- melt(qtl_GxM, #Reshape data from wide to long
+                    varnames = c("geneid", "mrkid"), 
+                    value.name = "importance") %>%
+    filter(importance >= cutoff) %>% #Select the values above the cutoff
+    left_join(y = qtl_GxPrax, by = "geneid") %>% #Attach dev importance per gene
+    mutate(totalImportance = importance/mean(importance) + devImportance/mean(devImportance))
+  
+  #Attach gene data
+  qtl_merge1 <- merge(qtl_pairs, genedata, by.x = "geneid", by.y = "row.names") %>%
+    rename(genename = name ,
+           genestart = start, 
+           geneend = end, 
+           genechr = chr)
+  
+  #Attach marker data
+  qtl_merge2 <- merge(qtl_merge1, mrkdata, by.x = "mrkid", by.y = "marker") %>%
+    rename(mrkchr = chr,
+           mrkstart = start,
+           mrkend = end) 
+  
+  #Classify and clean up
+  qtl_merged <- qtl_merge2 %>%
+    filter(genechr != "MtDNA" & mrkchr != "MtDNA") %>%
+    mutate(distance = abs(genestart-mrkstart), #calculate distance between gene and marker
+           type = ifelse(mrkchr == genechr, #If the two chromosomes are the same, check distance
+                         yes = ifelse(distance < 1000000, #Check for 1 Mb apart if same chromosome
+                                      "local", 
+                                      "distant"),
+                         no = "distant") #If two different chromosomes, always distant
+    ) %>%
+    select(geneid, genename, genestart, geneend, genechr, mrkid, mrkstart, mrkend, mrkchr, distance, type, importance, devImportance, totalImportance) %>% #Reorder columns
+    mutate(genechr = fct_relevel(genechr, "X", "V", "IV", "III", "II", "I"), #Needed for cis-trans plot
+           mrkchr = fct_relevel(mrkchr, "I", "II", "III", "IV", "V", "X")) %>%
+    arrange(desc(importance))
+  
+  return(qtl_merged)
+}
+
+### Plotting functions
+
+## Cis-trans plots
+#Function for a standard cis-trans QTL plot    
+qtlCTplot <- function(df){
+  ggplot(df, aes(mrkstart, genestart, shape = type)) + 
+    geom_point() + 
+    facet_grid(genechr~mrkchr) + 
+    theme_bw() +
+    theme(panel.spacing = unit(0.1, "lines"),
+          axis.text = element_blank(),
+          axis.ticks = element_blank()) +
+    labs(x = "Marker position", y = "Gene position")
+}
+
+#Function for cis-trans plots of different datasets, splits on 'compare'
+qtlCompare <- function(df, compare){
+  ggplot(df, aes_string("mrkstart", "genestart", col = compare)) + 
+    geom_point(alpha = 0.3) + 
+    facet_grid(genechr~mrkchr) + 
+    theme_bw() +
+    theme(panel.spacing = unit(0.1, "lines"),
+          axis.text = element_blank(),
+          axis.ticks = element_blank()) +
+    labs(x = "Marker position", y = "Gene position")
+}
+
+## Hotspot plots
+#Function to plot a histogram of distant eQTLs to find hotspots
+qtlHotspot <- function(df){
+  df <- filter(df, type == "distant")
+  ggplot(data = df, aes(mrkstart)) + 
+    geom_histogram(binwidth = 2e6) + #Not sure about best binwidth
+    facet_wrap(~mrkchr,nrow = 1) + 
+    theme_bw() +
+    theme(panel.spacing = unit(0.1, "lines"), #Mimic c-tplot style
+          axis.text = element_blank(), 
+          axis.ticks = element_blank()) +
+    labs(x = "Marker position", y = "#eQTLs") +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
+}
+
+#Function to plot a distant eQTLs histogram with multiple datasets
+qtlCompHotspot <- function(df, compare){
+  df <- filter(df, type == "distant")
+  ggplot(data = df, aes_string("mrkstart", fill = compare)) + 
+    geom_histogram(binwidth = 2e6) + #Not sure about best binwidth
+    facet_wrap(~mrkchr,nrow = 1) + 
+    theme_bw() +
+    theme(panel.spacing = unit(0.1, "lines"), #Mimic c-tplot style
+          axis.text = element_blank(), 
+          axis.ticks = element_blank()) +
+    labs(x = "Marker position", y = "#eQTLs") +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
+}
+
+
+## Combined cis-trans and hotspot plots
+qtlBoth <- function(df){
+  plot_grid(qtlCTplot(df) + theme(panel.grid.minor = element_blank(),
+                                  plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",),
+                                  axis.title.x = element_blank()
+  ), 
+  qtlHotspot(df) + theme(panel.grid.minor.x = element_blank(),
+                         plot.margin = unit(c(0,0,0.2,0), "cm"),
+                         strip.background = element_blank(),
+                         strip.text.x = element_blank()
+  ), 
+  ncol = 1, 
+  align = 'v', 
+  axis = 'lr',
+  rel_heights = c(3,1))
+}
+
+qtlCompBoth <- function(df, compare){
+  plot_grid(qtlCompare(df, compare) + theme(panel.grid.minor = element_blank(),
+                                            plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",),
+                                            axis.title.x = element_blank(),
+                                            legend.title = element_text(size = 11)
+  ), 
+  qtlCompHotspot(df, compare) + theme(panel.grid.minor.x = element_blank(),
+                                      plot.margin = unit(c(0,0,0.2,0), "cm"),
+                                      strip.background = element_blank(),
+                                      strip.text.x = element_blank()
+  ), 
+  ncol = 1, 
+  align = 'v', 
+  axis = 'lr',
+  rel_heights = c(3,1))
+}
+
+
+## Start analysis ----------------  
+#Get the genome-wide data for all three conditions
+qtl_dev <- qtlGenome(data.incmse.dev, cutoff = 0.2)
+qtl_hs <- qtlGenome(data.incmse.hs, cutoff = 0.2)
+qtl_rec <- qtlGenome(data.incmse.rec, cutoff = 0.2)
+head(qtl_dev)
+
+#Count total eQTLs
+matrix(c(
+  sum(qtl_dev$type == "local"), sum(qtl_hs$type == "local"), sum(qtl_rec$type == "local"),
+  sum(qtl_dev$type == "distant"), sum(qtl_hs$type == "distant"), sum(qtl_rec$type == "distant"),
+  nrow(qtl_dev), nrow(qtl_hs), nrow(qtl_rec)),
+  nrow = 3, dimnames = list(c("Dev", "HS", "Rec"), c("Local", "Distant", "Total"))
+)
+
+## Start cis-trans plot ----
+qtl_devplot <- qtlCTplot(qtl_dev) + ggtitle("eQTLs found during development")
+qtl_devplot
+
+qtlBoth(qtl_dev)
+
+print(c("Total number of eQTLs:", nrow(qtl_dev)))
+print(c("Number of local eQTLs:", sum(qtl_dev$type == "local")))
+print(c("Number of distant eQTLs:", sum(qtl_dev$type == "distant")))
+ggsave(plot = qtl_ctplot,
+       filename = paste0("cistransplot_",
+                         "t", nrow(qtl_dev), #Total eQTLs
+                         "_l", sum(qtl_dev$type == "local"), #Local eQTLs
+                         "_d", sum(qtl_dev$type == "distant"), #Distant eQTLS
+                         ".png")
+)
+
+# Explore the different conditions
+qtl_hsplot <- qtlCTplot(qtl_hs) + ggtitle("eQTLs found during heat shock")
+qtl_hsplot
+
+qtl_recplot <- qtlCTplot(qtl_rec) + ggtitle("eQTLs found during recovery")
+qtl_recplot
+
+qtl_all <- bind_rows(
+  qtl_dev %>% mutate(condition = "dev"),
+  qtl_hs %>% mutate(condition = "hs"),
+  qtl_rec %>% mutate(condition = "rec")
+)
+
+qtlCompare(qtl_all, compare = "condition") + ggtitle("eQTLs in the three conditions")
+
+qtl_bothplot <- qtlCompBoth(qtl_all, compare = "condition")
+qtl_bothplot
+ggsave2(plot = qtl_bothplot,
+        filename = paste0("bothplot_",
+                          "t", nrow(qtl_all), #Total eQTLs
+                          "_l", sum(qtl_all$type == "local"), #Local eQTLs
+                          "_d", sum(qtl_all$type == "distant"), #Distant eQTLS
+                          ".png")
+)
+
+
+
+
+
+
+
+
+
+## Create combined cis-trans plot of both importance measures
+#Recreate the data for with purity instead
+
+qtl_comppur <- qtlGenome(data.pur.dev, cutoff = 4)
+
+qtl_compmse <- mutate(qtl_dev, data = "incmse")
+qtl_comppur <- mutate(qtl_ctpur, data = "pur")
+#Merge the mse and purity datasets
+qtl_msepur <- bind_rows(qtl_comppur, qtl_compmse) 
+
+#Plot them together
+qtlCompare(qtl_msepur, compare = "data") + ggtitle("All eQTLs from both measures of importance")
+
+
+#Find unique QTLs in each dataset
+qtl_uniquemse <- anti_join(qtl_compmse, qtl_comppur, by = c('geneid', 'mrkid'))
+qtl_uniquepur <- anti_join(qtl_comppur, qtl_compmse, by = c('geneid', 'mrkid'))
+qtl_unique <- bind_rows(qtl_uniquemse, qtl_uniquepur)
+nrow(qtl_uniquemse)
+nrow(qtl_uniquepur)
+
+qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
 
 
 ### Analyse genes with strongest eQTLs ------------------------------------------------------------------------------------
@@ -294,8 +520,8 @@ write.csv(rf.all.rec, file = "RF_recgenes.csv")
       #Use Dev (*.dev.*), HS (*.hs.*) or Rec (*.rec.*) data?
       
       qtl_gexp <-          gexp.dev.nd ; dim(qtl_gexp)
-      qtl_rf <-     data.incmse.dev[,-1] ; dim(qtl_rf) #-1 to drop the prax non-gene marker
-      qtl_rfprax <- data.incmse.dev[,1] ; length(qtl_rfprax) #only the importance of development for the eQTL
+      # qtl_rf <-     data.incmse.dev[,-1] ; dim(qtl_rf) #-1 to drop the prax non-gene marker
+      # qtl_rfprax <- data.incmse.dev[,1] ; length(qtl_rfprax) #only the importance of development for the eQTL
       qtl_gm <-          use.gm.dev ; dim(qtl_gm)
       qtl_prax <-          prax.dev ; length(qtl_prax)
 
@@ -317,13 +543,14 @@ qtl_mrks <- left_join(qtl_mrks, rownames_to_column(data.frame(qtl_rfprax), "gene
   rename(devImportance = qtl_rfprax)
 qtl_mrks$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
 
+qtl_mrks <- qtlGenome(data.incmse.dev, cutoff = qtl_cutoff)
 # ggplot(data=qtl_mrks, aes(1:length(importance), importance)) + 
 #   geom_point(alpha=0.5) + 
 #   geom_hline(yintercept=0.2, color="red", linetype="dashed") +
 #   xlab("Index") +
 #   ggtitle("Importance values of best marker of all genes")
 
-#To replace significance: only work w/ high values, above red line in plot above, choose cutoff manually
+#To replace significance: only work w/ high values, choose cutoff manually, based on data distribution
 qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
 qtl_sig <- qtl_mrks[qtl_mrks$importance >= qtl_cutoff,] 
 
@@ -436,233 +663,7 @@ for (generank in 1:length(qtl_sig$Importance)){
 # }
 # qtl_bigplot
 
-### Analyse all eQTLs genome-wide --------------------------------------------------------------------------------------
-## Prepare genome-wide data/functions -----------------------
-    
-#Function to create a full dataset with gene/marker locations from eQTL pairs
-qtlGenome <- function(df, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata = mrk.info){
-  qtl_GxM <- df[,-1] #Separate the gene x marker matrix
-  qtl_GxPrax <- df[,1]# from the gene x developmental axis data
-  qtl_GxPrax <- rownames_to_column(data.frame(qtl_GxPrax))
-  colnames(qtl_GxPrax) <- c("geneid", "devImportance")
-  
-  qtl_pairs <- melt(qtl_GxM, #Reshape data from wide to long
-                    varnames = c("geneid", "mrkid"), 
-                    value.name = "importance") %>%
-    filter(importance >= cutoff) %>% #Select the values above the cutoff
-    left_join(y = qtl_GxPrax, by = "geneid") %>% #Attach dev importance per gene
-    mutate(totalImportance = importance/mean(qtl_mrks$importance) + devImportance/mean(qtl_mrks$devImportance)) %>%
-    arrange(desc(importance))
-  
-  #Attach gene data
-  qtl_merge1 <- merge(qtl_pairs, genedata, by.x = "geneid", by.y = "row.names") %>%
-    rename(genename = name ,
-           genestart = start, 
-           geneend = end, 
-           genechr = chr)
-  
-  #Attach marker data
-  qtl_merge2 <- merge(qtl_merge1, mrkdata, by.x = "mrkid", by.y = "marker") %>%
-    rename(mrkchr = chr,
-           mrkstart = start,
-           mrkend = end) 
-  
-  #Classify and clean up
-  qtl_merged <- qtl_merge2 %>%
-    filter(genechr != "MtDNA" & mrkchr != "MtDNA") %>%
-    mutate(distance = abs(genestart-mrkstart), #calculate distance between gene and marker
-           type = ifelse(mrkchr == genechr, #If the two chromosomes are the same, check distance
-                         yes = ifelse(distance < 1000000, #Check for 1 Mb apart if same chromosome
-                                      "local", 
-                                      "distant"),
-                         no = "distant") #If two different chromosomes, always distant
-    ) %>%
-    select(geneid, genename, genestart, geneend, genechr, mrkid, mrkstart, mrkend, mrkchr, distance, type, importance, devImportance, totalImportance) %>% #Reorder columns
-    mutate(genechr = fct_relevel(genechr, "X", "V", "IV", "III", "II", "I"), #Needed for cis-trans plot
-           mrkchr = fct_relevel(mrkchr, "I", "II", "III", "IV", "V", "X"))
-  
-  return(qtl_merged)
-}
 
-### Plotting functions
-    
-## Cis-trans plots
-#Function for a standard cis-trans QTL plot    
-qtlCTplot <- function(df){
-  ggplot(df, aes(mrkstart, genestart, shape = type)) + 
-    geom_point() + 
-    facet_grid(genechr~mrkchr) + 
-    theme_bw() +
-    theme(panel.spacing = unit(0.1, "lines"),
-          axis.text = element_blank(),
-          axis.ticks = element_blank()) +
-    labs(x = "Marker position", y = "Gene position")
-}
-
-#Function for cis-trans plots of different datasets, splits on 'compare'
-qtlCompare <- function(df, compare){
-  ggplot(df, aes_string("mrkstart", "genestart", col = compare)) + 
-    geom_point(alpha = 0.3) + 
-    facet_grid(genechr~mrkchr) + 
-    theme_bw() +
-    theme(panel.spacing = unit(0.1, "lines"),
-          axis.text = element_blank(),
-          axis.ticks = element_blank()) +
-    labs(x = "Marker position", y = "Gene position")
-}
-
-## Hotspot plots
-#Function to plot a histogram of distant eQTLs to find hotspots
-qtlHotspot <- function(df){
-  df <- filter(df, type == "distant")
-  ggplot(data = df, aes(mrkstart)) + 
-    geom_histogram(binwidth = 2e6) + #Not sure about best binwidth
-    facet_wrap(~mrkchr,nrow = 1) + 
-    theme_bw() +
-    theme(panel.spacing = unit(0.1, "lines"), #Mimic c-tplot style
-          axis.text = element_blank(), 
-          axis.ticks = element_blank()) +
-    labs(x = "Marker position", y = "#eQTLs") +
-    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
-}
-
-#Function to plot a distant eQTLs histogram with multiple datasets
-qtlCompHotspot <- function(df, compare){
-  df <- filter(df, type == "distant")
-  ggplot(data = df, aes_string("mrkstart", fill = compare)) + 
-    geom_histogram(binwidth = 2e6) + #Not sure about best binwidth
-    facet_wrap(~mrkchr,nrow = 1) + 
-    theme_bw() +
-    theme(panel.spacing = unit(0.1, "lines"), #Mimic c-tplot style
-          axis.text = element_blank(), 
-          axis.ticks = element_blank()) +
-    labs(x = "Marker position", y = "#eQTLs") +
-    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
-}
-
-
-## Combined cis-trans and hotspot plots
-qtlBoth <- function(df){
-  plot_grid(qtlCTplot(df) + theme(panel.grid.minor = element_blank(),
-                                  plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",),
-                                  axis.title.x = element_blank()
-                                  ), 
-            qtlHotspot(df) + theme(panel.grid.minor.x = element_blank(),
-                                   plot.margin = unit(c(0,0,0.2,0), "cm"),
-                                   strip.background = element_blank(),
-                                   strip.text.x = element_blank()
-                                   ), 
-            ncol = 1, 
-            align = 'v', 
-            axis = 'lr',
-            rel_heights = c(3,1))
-}
-
-qtlCompBoth <- function(df, compare){
-  plot_grid(qtlCompare(df, compare) + theme(panel.grid.minor = element_blank(),
-                                            plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",),
-                                            axis.title.x = element_blank(),
-                                            legend.title = element_text(size = 11)
-                                            ), 
-            qtlCompHotspot(df, compare) + theme(panel.grid.minor.x = element_blank(),
-                                                plot.margin = unit(c(0,0,0.2,0), "cm"),
-                                                strip.background = element_blank(),
-                                                strip.text.x = element_blank()
-                                                ), 
-            ncol = 1, 
-            align = 'v', 
-            axis = 'lr',
-            rel_heights = c(3,1))
-}
-
-
-## Start analysis and plotting ----------------  
-#Get the genome-wide data for all three conditions
-qtl_dev <- qtlGenome(data.incmse.dev, cutoff = 0.2)
-qtl_hs <- qtlGenome(data.incmse.hs, cutoff = 0.2)
-qtl_rec <- qtlGenome(data.incmse.rec, cutoff = 0.2)
-head(qtl_dev)
-
-#Count total eQTLs
-matrix(c(
-  sum(qtl_dev$type == "local"), sum(qtl_hs$type == "local"), sum(qtl_rec$type == "local"),
-  sum(qtl_dev$type == "distant"), sum(qtl_hs$type == "distant"), sum(qtl_rec$type == "distant"),
-  nrow(qtl_dev), nrow(qtl_hs), nrow(qtl_rec)),
-  nrow = 3, dimnames = list(c("Dev", "HS", "Rec"), c("Local", "Distant", "Total"))
-)
-
-## Start cis-trans plot ----
-qtl_devplot <- qtlCTplot(qtl_dev) + ggtitle("eQTLs found during development")
-qtl_devplot
-
-qtlBoth(qtl_dev)
-
-print(c("Total number of eQTLs:", nrow(qtl_dev)))
-print(c("Number of local eQTLs:", sum(qtl_dev$type == "local")))
-print(c("Number of distant eQTLs:", sum(qtl_dev$type == "distant")))
-ggsave(plot = qtl_ctplot,
-       filename = paste0("cistransplot_",
-                         "t", nrow(qtl_dev), #Total eQTLs
-                         "_l", sum(qtl_dev$type == "local"), #Local eQTLs
-                         "_d", sum(qtl_dev$type == "distant"), #Distant eQTLS
-                         ".png")
-       )
-
-# Explore the different conditions
-qtl_hsplot <- qtlCTplot(qtl_hs) + ggtitle("eQTLs found during heat shock")
-qtl_hsplot
-
-qtl_recplot <- qtlCTplot(qtl_rec) + ggtitle("eQTLs found during recovery")
-qtl_recplot
-
-qtl_all <- bind_rows(
-  qtl_dev %>% mutate(condition = "dev"),
-  qtl_hs %>% mutate(condition = "hs"),
-  qtl_rec %>% mutate(condition = "rec")
-)
-
-qtlCompare(qtl_all, compare = "condition") + ggtitle("eQTLs in the three conditions")
-
-qtl_bothplot <- qtlCompBoth(qtl_all, compare = "condition")
-qtl_bothplot
-ggsave2(plot = qtl_bothplot,
-        filename = paste0("bothplot_",
-                          "t", nrow(qtl_all), #Total eQTLs
-                          "_l", sum(qtl_all$type == "local"), #Local eQTLs
-                          "_d", sum(qtl_all$type == "distant"), #Distant eQTLS
-                          ".png")
-)
-
-
-
-
-
-
-
-
-
-## Create combined cis-trans plot of both importance measures
-#Recreate the data for with purity instead
-
-qtl_comppur <- qtlGenome(data.pur.dev, cutoff = 4)
-
-qtl_compmse <- mutate(qtl_dev, data = "incmse")
-qtl_comppur <- mutate(qtl_ctpur, data = "pur")
-#Merge the mse and purity datasets
-qtl_msepur <- bind_rows(qtl_comppur, qtl_compmse) 
-
-#Plot them together
-qtlCompare(qtl_msepur, compare = "data") + ggtitle("All eQTLs from both measures of importance")
-
-
-#Find unique QTLs in each dataset
-qtl_uniquemse <- anti_join(qtl_compmse, qtl_comppur, by = c('geneid', 'mrkid'))
-qtl_uniquepur <- anti_join(qtl_comppur, qtl_compmse, by = c('geneid', 'mrkid'))
-qtl_unique <- bind_rows(qtl_uniquemse, qtl_uniquepur)
-nrow(qtl_uniquemse)
-nrow(qtl_uniquepur)
-
-qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
 
 randomForestExplainer::explain_forest(rf.res)
 
