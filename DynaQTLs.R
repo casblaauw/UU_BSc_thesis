@@ -6,10 +6,9 @@ library(gplots)
 library(cowplot)
 library(tidyverse)
 library(forcats)
+library(reshape2)
 library(randomForest)
 library(randomForestExplainer)
-
-
 
 ## Needed data --------------------------------------------------------------------------------
 # Random forest results
@@ -305,30 +304,35 @@ qtl_gm[qtl_gm == -1 ] <- "CB"
 qtl_gm[qtl_gm == 1 ] <- "N2"
 
 # Find top marker/eQTL per gene and sort
-qtl_mrks <- data.frame(
-  TopMarker = colnames(qtl_rf)[apply(qtl_rf, MARGIN = 1, FUN = which.max)], #find colnames of locations w/ max value per row
-  Importance = apply(qtl_rf, MARGIN = 1, FUN = max), #find top values per row
-  DevImportance = qtl_rfprax   
-) 
-qtl_mrks <- qtl_mrks[order(-qtl_mrks$Importance),]
-qtl_mrks$TotalImportance <- qtl_mrks$Importance/mean(qtl_mrks$Importance) + qtl_mrks$DevImportance/mean(qtl_mrks$DevImportance)
+# qtl_mrks <- data.frame(
+#   TopMarker = colnames(qtl_rf)[apply(qtl_rf, MARGIN = 1, FUN = which.max)], #find colnames of locations w/ max value per row
+#   Importance = apply(qtl_rf, MARGIN = 1, FUN = max), #find top values per row
+#   DevImportance = qtl_rfprax   
+# ) 
+# qtl_mrks <- qtl_mrks[order(-qtl_mrks$Importance),]
 
-ggplot(data=qtl_mrks, aes(1:length(Importance), Importance)) + 
-  geom_point(alpha=0.5) + 
-  geom_hline(yintercept=0.2, color="red", linetype="dashed") +
-  xlab("Index") +
-  ggtitle("Importance values of best marker of all genes")
+qtl_mrks <- melt(qtl_rf, varnames = c("geneid", "mrkid"), value.name = "importance") %>%
+  arrange(desc(importance)) 
+qtl_mrks <- left_join(qtl_mrks, rownames_to_column(data.frame(qtl_rfprax), "geneid"), by = "geneid") %>%
+  rename(devImportance = qtl_rfprax)
+qtl_mrks$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
+
+# ggplot(data=qtl_mrks, aes(1:length(importance), importance)) + 
+#   geom_point(alpha=0.5) + 
+#   geom_hline(yintercept=0.2, color="red", linetype="dashed") +
+#   xlab("Index") +
+#   ggtitle("Importance values of best marker of all genes")
 
 #To replace significance: only work w/ high values, above red line in plot above, choose cutoff manually
 qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
-qtl_sig <- qtl_mrks[qtl_mrks$Importance >= qtl_cutoff,] 
+qtl_sig <- qtl_mrks[qtl_mrks$importance >= qtl_cutoff,] 
 
 #Sort by importance of development for eQTL
-qtl_sig <- qtl_sig[order(-qtl_sig$DevImportance),]
+qtl_sig <- qtl_sig[order(-qtl_sig$devImportance),]
 #Sort by combined importance
-qtl_sig <- qtl_sig[order(-qtl_sig$TotalImportance),]
+qtl_sig <- qtl_sig[order(-qtl_sig$totalImportance),]
 #Resort by importance of marker for eQTL
-qtl_sig <- qtl_sig[order(-qtl_sig$Importance),]
+qtl_sig <- qtl_sig[order(-qtl_sig$importance),]
 
 
 ## Start eQTL plots ----
