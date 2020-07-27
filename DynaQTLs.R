@@ -429,6 +429,9 @@ qtlCompBoth <- function(df, compare){
 
 
 ## Create genome-wide data ----------------  
+# Set the eQTL cutoff
+qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
+
 #Get the genome-wide data for all three conditions
 qtl_dev <- qtlGenome(data.incmse.dev, cutoff = 0.2)
 qtl_hs <- qtlGenome(data.incmse.hs, cutoff = 0.2)
@@ -521,30 +524,6 @@ ggsave2(plot = qtl_bothplot,
                           "_d", sum(qtl_all$type == "distant"), #Distant eQTLS
                           ".png")
 )
-
-## Create combined cis-trans plot of both importance measures
-#Recreate the data for with purity instead
-
-qtl_comppur <- qtlGenome(data.pur.dev, cutoff = 4)
-
-qtl_compmse <- mutate(qtl_dev, data = "incmse")
-qtl_comppur <- mutate(qtl_ctpur, data = "pur")
-#Merge the mse and purity datasets
-qtl_msepur <- bind_rows(qtl_comppur, qtl_compmse) 
-
-#Plot them together
-qtlCompare(qtl_msepur, compare = "data") + ggtitle("All eQTLs from both measures of importance")
-
-
-#Find unique QTLs in each dataset
-qtl_uniquemse <- anti_join(qtl_compmse, qtl_comppur, by = c('geneid', 'mrkid'))
-qtl_uniquepur <- anti_join(qtl_comppur, qtl_compmse, by = c('geneid', 'mrkid'))
-qtl_unique <- bind_rows(qtl_uniquemse, qtl_uniquepur)
-nrow(qtl_uniquemse)
-nrow(qtl_uniquepur)
-
-qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
-
 ### Analyse individual eQTLs ------------------------------------------------------------------------------------
 ## Prepare individual eQTL functions -------------------------
 qtlData <- function(marker = qtl_mrk, gene = qtl_gene){
@@ -579,25 +558,6 @@ qtlPlot <- function(df, marker = qtl_mrk, gene = qtl_gene){
 #Properly label genetic map in preparation for plots      
 qtl_gm[qtl_gm == -1 ] <- "CB"
 qtl_gm[qtl_gm == 1 ] <- "N2"
-
-#To replace significance: only work w/ high values, choose cutoff manually, based on data distribution
-qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
-
-
-## Remake non-cutoff QTL data for exploration if needed (warning: very large)
-          # qtl_mrks <- melt(qtl_rf[,-1], varnames = c("geneid", "mrkid"), value.name = "importance") %>%
-          #   arrange(desc(importance))
-          # qtl_mrks <- left_join(qtl_mrks, rownames_to_column(data.frame(qtl_rf[,1]), "geneid"), by = "geneid") %>%
-          #   rename(devImportance = qtl_rf[,1])
-          # qtl_mrks$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
-          # 
-          # ggplot(data=qtl_mrks, aes(1:length(importance), importance)) +
-          #   geom_point(alpha=0.5) +
-          #   geom_hline(yintercept=0.2, color="red", linetype="dashed") +
-          #   xlab("Index") +
-          #   ggtitle("Importance values of best marker of all genes")
-          # 
-          # qtl_sig <- qtl_mrks[qtl_mrks$importance >= qtl_cutoff,]
 
 
 ## Sort the QTLs by marker importance (default), development importance or combined.
@@ -692,7 +652,64 @@ for (generank in 1:length(qtl_sig$Importance)){
 # }
 # qtl_bigplot
 
+## Supplemental ---------------------------------------------------
+# Figure 1
+#Plot the distribution of importance values for incmse and purity
+qtl_incmse <- melt(data.incmse.dev[,-1], varnames = c("geneid", "mrkid"), value.name = "importance") %>%
+  arrange(desc(importance))
+    # Add the extra importance dimensions if needed
+    #qtl_incmse <- left_join(qtl_incmse, rownames_to_column(data.frame(qtl_rf[,1]), "geneid"), by = "geneid") %>%
+    #     rename(devImportance = qtl_rf[,1])
+    #qtl_incmse$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
+    
+qtl_pur <- melt(data.pur.dev[,-1], varnames = c("geneid", "mrkid"), value.name = "importance") %>%
+  arrange(desc(importance))
 
+qtl_incmseplot <- ggplot(data=qtl_incmse, aes(1:length(importance), importance)) +
+  geom_point(alpha=0.5) +
+  geom_hline(yintercept=0.2, color="red", linetype="dashed") +
+  xlab("Index") +
+  # xlim(0,1000) +
+  ggtitle("Distribution of incMSE importance values")
+
+qtl_purplot <- ggplot(data=qtl_pur, aes(1:length(importance), importance)) +
+  geom_point(alpha=0.5) +
+  geom_hline(yintercept=4, color="red", linetype="dashed") +
+  xlab("Index") +
+  # xlim(0,1000) +
+  ggtitle("Distribution of purity importance values") 
+
+qtl_incpurplot <- plot_grid(qtl_incmseplot, qtl_purplot, align = "h", labels = "AUTO")
+ggsave2(plot = qtl_incpurplot, filename = "add1.png", width = 30, height = 15, units = "cm")
+
+## Create combined cis-trans plot of both importance measures
+#Recreate the data for with purity instead
+
+qtl_comppur <- qtlGenome(data.pur.dev, cutoff = 4)
+
+qtl_compmse <- mutate(qtl_dev, data = "incmse")
+qtl_comppur <- mutate(qtl_comppur, data = "pur")
+#Merge the mse and purity datasets
+qtl_msepur <- bind_rows(qtl_comppur, qtl_compmse) 
+
+#Plot them together
+qtl_comp1 <- qtlCompare(qtl_msepur, compare = "data") + ggtitle("All eQTLs from both measures of importance")
+qtl_comp1
+
+#Find unique QTLs in each dataset
+qtl_uniquemse <- anti_join(qtl_compmse, qtl_comppur, by = c('geneid', 'mrkid'))
+qtl_uniquepur <- anti_join(qtl_comppur, qtl_compmse, by = c('geneid', 'mrkid'))
+qtl_unique <- bind_rows(qtl_uniquemse, qtl_uniquepur)
+nrow(qtl_uniquemse)
+nrow(qtl_uniquepur)
+qtl_uniquemse %>% count(type)
+qtl_uniquepur %>% count(type)
+
+qtl_comp2 <- qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
+qtl_comp2
+
+qtl_compboth <- plot_grid(qtl_comp1, qtl_comp2, align = "h", labels = "AUTO")
+ggsave2(qtl_compboth, filename = "add2.png", width = 30, height = 15, units = "cm")
 
 randomForestExplainer::explain_forest(rf.res)
 
