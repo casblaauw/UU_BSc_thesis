@@ -442,15 +442,15 @@ for (generank in 1:length(qtl_sig$Importance)){
 #Function to create a full dataset with gene/marker locations from eQTL pairs
 qtlGenome <- function(df, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata = mrk.info){
   qtl_GxM <- df[,-1] #Separate the gene x marker matrix
-  qtl_GxPrax <- df[,1]# from the gene x projection marker data
+  qtl_GxPrax <- df[,1]# from the gene x developmental axis data
   qtl_GxPrax <- rownames_to_column(data.frame(qtl_GxPrax))
   colnames(qtl_GxPrax) <- c("geneid", "devImportance")
   
-  qtl_pairs <- melt(qtl_GxM, 
+  qtl_pairs <- melt(qtl_GxM, #Reshape data from wide to long
                     varnames = c("geneid", "mrkid"), 
                     value.name = "importance") %>%
-    filter(importance >= cutoff) %>%
-    left_join(y = qtl_GxPrax, by = "geneid") %>%
+    filter(importance >= cutoff) %>% #Select the values above the cutoff
+    left_join(y = qtl_GxPrax, by = "geneid") %>% #Attach dev importance per gene
     mutate(totalImportance = importance/mean(qtl_mrks$importance) + devImportance/mean(qtl_mrks$devImportance)) %>%
     arrange(desc(importance))
   
