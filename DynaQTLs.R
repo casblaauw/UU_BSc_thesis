@@ -439,7 +439,6 @@ matrix(c(
   nrow(qtl_dev), nrow(qtl_hs), nrow(qtl_rec)),
   nrow = 3, dimnames = list(c("Dev", "HS", "Rec"), c("Local", "Distant", "Total"))
 )
-
 ## Start cis-trans plot ----
 qtl_devplot <- qtlCTplot(qtl_dev) + ggtitle("eQTLs found during development")
 qtl_devplot
@@ -482,14 +481,6 @@ ggsave2(plot = qtl_bothplot,
                           ".png")
 )
 
-
-
-
-
-
-
-
-
 ## Create combined cis-trans plot of both importance measures
 #Recreate the data for with purity instead
 
@@ -513,56 +504,8 @@ nrow(qtl_uniquepur)
 
 qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
 
-
-### Analyse genes with strongest eQTLs ------------------------------------------------------------------------------------
-## Prepare and sort RF data ----
-
-      #Use Dev (*.dev.*), HS (*.hs.*) or Rec (*.rec.*) data?
-      
-      qtl_gexp <-          gexp.dev.nd ; dim(qtl_gexp)
-      # qtl_rf <-     data.incmse.dev[,-1] ; dim(qtl_rf) #-1 to drop the prax non-gene marker
-      # qtl_rfprax <- data.incmse.dev[,1] ; length(qtl_rfprax) #only the importance of development for the eQTL
-      qtl_gm <-          use.gm.dev ; dim(qtl_gm)
-      qtl_prax <-          prax.dev ; length(qtl_prax)
-
-#Properly label genetic map in preparation for plots      
-qtl_gm[qtl_gm == -1 ] <- "CB"
-qtl_gm[qtl_gm == 1 ] <- "N2"
-
-# Find top marker/eQTL per gene and sort
-# qtl_mrks <- data.frame(
-#   TopMarker = colnames(qtl_rf)[apply(qtl_rf, MARGIN = 1, FUN = which.max)], #find colnames of locations w/ max value per row
-#   Importance = apply(qtl_rf, MARGIN = 1, FUN = max), #find top values per row
-#   DevImportance = qtl_rfprax   
-# ) 
-# qtl_mrks <- qtl_mrks[order(-qtl_mrks$Importance),]
-
-qtl_mrks <- melt(qtl_rf, varnames = c("geneid", "mrkid"), value.name = "importance") %>%
-  arrange(desc(importance)) 
-qtl_mrks <- left_join(qtl_mrks, rownames_to_column(data.frame(qtl_rfprax), "geneid"), by = "geneid") %>%
-  rename(devImportance = qtl_rfprax)
-qtl_mrks$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
-
-qtl_mrks <- qtlGenome(data.incmse.dev, cutoff = qtl_cutoff)
-# ggplot(data=qtl_mrks, aes(1:length(importance), importance)) + 
-#   geom_point(alpha=0.5) + 
-#   geom_hline(yintercept=0.2, color="red", linetype="dashed") +
-#   xlab("Index") +
-#   ggtitle("Importance values of best marker of all genes")
-
-#To replace significance: only work w/ high values, choose cutoff manually, based on data distribution
-qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
-qtl_sig <- qtl_mrks[qtl_mrks$importance >= qtl_cutoff,] 
-
-#Sort by importance of development for eQTL
-qtl_sig <- qtl_sig[order(-qtl_sig$devImportance),]
-#Sort by combined importance
-qtl_sig <- qtl_sig[order(-qtl_sig$totalImportance),]
-#Resort by importance of marker for eQTL
-qtl_sig <- qtl_sig[order(-qtl_sig$importance),]
-
-
-## Start eQTL plots ----
+### Analyse individual eQTLs ------------------------------------------------------------------------------------
+## Prepare individual eQTL functions -------------------------
 qtlData <- function(marker = qtl_mrk, gene = qtl_gene){
   df <- data.frame(
     Development = qtl_prax,
@@ -581,11 +524,56 @@ qtlPlot <- function(df, marker = qtl_mrk, gene = qtl_gene){
     scale_color_manual(values = c("blue","red"))
 }
 
+## Prepare and sort RF data ----------------------
+
+      #Use Dev (*.dev.*), HS (*.hs.*) or Rec (*.rec.*) data?
+      
+      qtl_gexp <-          gexp.dev.nd ; dim(qtl_gexp)
+      qtl_rf <-     data.incmse.dev ; dim(qtl_rf)
+      qtl_gm <-          use.gm.dev ; dim(qtl_gm)
+      qtl_prax <-          prax.dev ; length(qtl_prax)
+      
+      qtl_sig <-  qtlGenome(qtl_rf) ; dim(qtl_sig)
+
+#Properly label genetic map in preparation for plots      
+qtl_gm[qtl_gm == -1 ] <- "CB"
+qtl_gm[qtl_gm == 1 ] <- "N2"
+
+#To replace significance: only work w/ high values, choose cutoff manually, based on data distribution
+qtl_cutoff <- 0.2 #0.2 for incmse, 4 for purity
+
+
+## Remake non-cutoff QTL data for exploration if needed (warning: very large)
+          # qtl_mrks <- melt(qtl_rf[,-1], varnames = c("geneid", "mrkid"), value.name = "importance") %>%
+          #   arrange(desc(importance))
+          # qtl_mrks <- left_join(qtl_mrks, rownames_to_column(data.frame(qtl_rf[,1]), "geneid"), by = "geneid") %>%
+          #   rename(devImportance = qtl_rf[,1])
+          # qtl_mrks$totalImportance <- qtl_mrks$importance/mean(qtl_mrks$importance) + qtl_mrks$devImportance/mean(qtl_mrks$devImportance)
+          # 
+          # ggplot(data=qtl_mrks, aes(1:length(importance), importance)) +
+          #   geom_point(alpha=0.5) +
+          #   geom_hline(yintercept=0.2, color="red", linetype="dashed") +
+          #   xlab("Index") +
+          #   ggtitle("Importance values of best marker of all genes")
+          # 
+          # qtl_sig <- qtl_mrks[qtl_mrks$importance >= qtl_cutoff,]
+
+
+## Sort the QTLs by marker importance (default), development importance or combined.
+#Sort by importance of development for eQTL
+qtl_sig <- qtl_sig[order(-qtl_sig$devImportance),]
+#Sort by combined importance
+qtl_sig <- qtl_sig[order(-qtl_sig$totalImportance),]
+#Resort by importance of marker for eQTL
+qtl_sig <- qtl_sig[order(-qtl_sig$importance),]
+
+
+### Start plotting individual eQTLs ----------------
 ## Look at one specific gene and its top marker
     #Choose rank of desired gene by QTL importance
     qtl_rank <- 2
-qtl_mrk <- qtl_sig[qtl_rank,1]
-qtl_gene <- rownames(qtl_sig[qtl_rank,])
+qtl_mrk <- as.character(qtl_sig[qtl_rank,"mrkid"])
+qtl_gene <- as.character(qtl_sig[qtl_rank,"geneid"])
 qtlData(marker = qtl_mrk, gene = qtl_gene) %>%
   qtlPlot()
 
@@ -600,8 +588,8 @@ qtl_multidata <- data.frame(Development = double(),
                                Gene = character())
 #Get the data for each QTL, label it by gene and append
 for (i in 1:n_QTLs){
-  qtl_mrk <- as.character(qtl_sig[i,1])
-  qtl_gene <- rownames(qtl_sig[i,])
+  qtl_mrk <- as.character(qtl_sig[i,"mrkid"])
+  qtl_gene <- as.character(qtl_sig[i,"geneid"])
   qtl_loopdata <- cbind(qtlData(qtl_mrk, qtl_gene), qtl_gene)
   qtl_multidata <- rbind(qtl_multidata, qtl_loopdata)
 }
@@ -622,7 +610,7 @@ qtl_facetplot
     qtl_gene <- "WBGene00008352"
     dir.create("All_QTLs")
     
-geneQTLs <- sort(qtl_rf[qtl_gene,], decreasing = T) #Sort all markers of one gene by importance
+geneQTLs <- sort(qtl_rf[qtl_gene,-1], decreasing = T) #Sort all markers of one gene by importance
 for (i in 1:length(geneQTLs)){     #For each marker, starting with the strongest affinity
   qtl_mrk <- names(geneQTLs)[i]
   
@@ -632,8 +620,8 @@ for (i in 1:length(geneQTLs)){     #For each marker, starting with the strongest
   print(paste(i, "/", length(geneQTLs)))
 }
 
-## Just straight up check all genes with their best markers
-#Writes all plots to folder, doesn't show in Rstudio itself
+## Just straight up check all genes with their significant markers
+#Writes all plots to folder, doesn't show in Rstudio itself, can take a long time!
     dir.create("All_genes")
 
 for (generank in 1:length(qtl_sig$Importance)){
