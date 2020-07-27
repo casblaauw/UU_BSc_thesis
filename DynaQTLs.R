@@ -7,8 +7,11 @@ library(cowplot)
 library(tidyverse)
 library(forcats)
 library(reshape2)
+library(VennDiagram)
+library(RColorBrewer)
 library(randomForest)
 library(randomForestExplainer)
+
 
 ## Needed data --------------------------------------------------------------------------------
 # Random forest results
@@ -425,7 +428,7 @@ qtlCompBoth <- function(df, compare){
 }
 
 
-## Start analysis ----------------  
+## Create genome-wide data ----------------  
 #Get the genome-wide data for all three conditions
 qtl_dev <- qtlGenome(data.incmse.dev, cutoff = 0.2)
 qtl_hs <- qtlGenome(data.incmse.hs, cutoff = 0.2)
@@ -439,6 +442,44 @@ matrix(c(
   nrow(qtl_dev), nrow(qtl_hs), nrow(qtl_rec)),
   nrow = 3, dimnames = list(c("Dev", "HS", "Rec"), c("Local", "Distant", "Total"))
 )
+
+print(paste("Total:", "dev", nrow(qtl_dev), "hs", nrow(qtl_hs), "rec", nrow(qtl_rec)))
+qtl_counts <- qtl_all %>% group_by(geneid, mrkid) %>% summarise(n = n()) %>% group_by(n) %>% summarise(total = n())
+print(qtl_counts) #The amount of qtls shared between 1, 2 or 3 conditions
+print(paste("dev exclusive:", nrow(anti_join(qtl_dev, rbind(qtl_hs,qtl_rec), by = c("geneid", "mrkid"))),
+            "hs exclusive:", nrow(anti_join(qtl_hs, rbind(qtl_dev,qtl_rec), by = c("geneid", "mrkid"))),
+            "rec exclusive:", nrow(anti_join(qtl_rec, rbind(qtl_dev,qtl_hs), by = c("geneid", "mrkid")))))
+print(paste("dev-hs:", nrow(inner_join(qtl_dev, qtl_hs, by = c("geneid", "mrkid")))-qtl_counts[3,2],
+            "dev-rec:", nrow(inner_join(qtl_dev, qtl_rec, by = c("geneid", "mrkid")))-qtl_counts[3,2],
+            "hs-rec:",  nrow(inner_join(qtl_hs, qtl_rec, by = c("geneid", "mrkid"))) -qtl_counts[3,2]))
+
+venn.diagram(list(transmute(qtl_dev, paste0(geneid, mrkid))[,1],
+                  transmute(qtl_hs, paste0(geneid, mrkid))[,1],
+                  transmute(qtl_rec, paste0(geneid, mrkid))[,1]),
+             filename = "venn.png",
+             category.names = c("Development", "Heat stress", "Recovery"),
+             #Adapted from https://www.r-graph-gallery.com/14-venn-diagramm.html
+             # height = 480 , 
+             # width = 480 , 
+             # resolution = 200,
+             # Circles
+             lwd = 1,
+             # lty = 'blank',
+             fill = brewer.pal(3, "Pastel2"),
+             col = brewer.pal(3, "Set2"),
+             # Numbers
+             cex = 1.8,
+             fontface = "bold",
+             fontfamily = "sans",
+             # Set names
+             cat.cex = 1.5,
+             cat.fontface = "bold",
+             cat.default.pos = "outer",
+             cat.pos = c(-27, 27, 135),
+             cat.dist = c(0.055, 0.055, 0.085),
+             cat.fontfamily = "sans",
+             rotation = 1)
+
 ## Start cis-trans plot ----
 qtl_devplot <- qtlCTplot(qtl_dev) + ggtitle("eQTLs found during development")
 qtl_devplot
@@ -580,7 +621,7 @@ qtlData(marker = qtl_mrk, gene = qtl_gene) %>%
 ## Look at n genes with strongest (most important) eQTLs
     
     #Amount of best eQTLs to plot
-    n_QTLs <- 9
+    n_QTLs <- 36
 #Create an empty dataframe to append to
 qtl_multidata <- data.frame(Development = double(), 
                                Allele = character(),
