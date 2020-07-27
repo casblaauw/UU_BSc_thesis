@@ -440,24 +440,26 @@ for (generank in 1:length(qtl_sig$Importance)){
 ## Prepare genome-wide data/functions -----------------------
     
 #Function to create a full dataset with gene/marker locations from eQTL pairs
-qtlGenome <- function(data, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata = mrk.info){
-  #Get the paired genes and markers of the eQTLs
-  qtl_pairs <- data.frame( 
-    TopMarker = colnames(data[,-1])[apply(data[,-1], MARGIN = 1, FUN = which.max)], #find colnames of locations w/ max value per row
-    Importance = apply(data[,-1], MARGIN = 1, FUN = max) #find top values per row
-  ) %>%
-    arrange(desc(Importance)) %>%
-    filter(Importance >= cutoff)
+qtlGenome <- function(df, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata = mrk.info){
+  qtl_GxM <- df[,-1] #Separate the gene x marker matrix
+  qtl_GxPrax <- df[,1]# from the gene x projection marker data
+  qtl_GxPrax <- rownames_to_column(data.frame(qtl_GxPrax))
+  colnames(qtl_GxPrax) <- c("geneid", "devImportance")
+  
+  qtl_pairs <- melt(qtl_GxM, 
+                    varnames = c("geneid", "mrkid"), 
+                    value.name = "importance") %>%
+    filter(importance >= cutoff) %>%
+    left_join(y = qtl_GxPrax, by = "geneid") %>%
+    mutate(totalImportance = importance/mean(qtl_mrks$importance) + devImportance/mean(qtl_mrks$devImportance)) %>%
+    arrange(desc(importance))
   
   #Attach gene data
-  qtl_merge1 <- merge(qtl_pairs, genedata, by="row.names") %>%
-    rename(geneid = Row.names,
-           mrkid = TopMarker, 
-           genename = name ,
+  qtl_merge1 <- merge(qtl_pairs, genedata, by.x = "geneid", by.y = "row.names") %>%
+    rename(genename = name ,
            genestart = start, 
            geneend = end, 
-           genechr = chr,
-           importance = Importance)
+           genechr = chr)
   
   #Attach marker data
   qtl_merge2 <- merge(qtl_merge1, mrkdata, by.x = "mrkid", by.y = "marker") %>%
@@ -475,7 +477,7 @@ qtlGenome <- function(data, cutoff = qtl_cutoff, genedata = WormGenes, mrkdata =
                                       "distant"),
                          no = "distant") #If two different chromosomes, always distant
     ) %>%
-    select(geneid, genename, genestart, geneend, genechr, mrkid, mrkstart, mrkend, mrkchr, distance, type, importance) %>% #Reorder columns
+    select(geneid, genename, genestart, geneend, genechr, mrkid, mrkstart, mrkend, mrkchr, distance, type, importance, devImportance, totalImportance) %>% #Reorder columns
     mutate(genechr = fct_relevel(genechr, "X", "V", "IV", "III", "II", "I"), #Needed for cis-trans plot
            mrkchr = fct_relevel(mrkchr, "I", "II", "III", "IV", "V", "X"))
   
