@@ -576,7 +576,7 @@ qtlData <- function(marker = qtl_mrk, gene = qtl_gene){
 
 qtlPlot <- function(df, marker = qtl_mrk, gene = qtl_gene){
   ggplot(df, aes(Development, Expression, col=Allele)) +
-    geom_smooth(se=F) +
+    geom_smooth(se=F, span = 1) +
     geom_point()+
     ggtitle(paste(gene, marker))+
     labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
@@ -620,51 +620,84 @@ qtlData(marker = qtl_mrk, gene = qtl_gene) %>%
 ## Look at n genes with strongest (most important) eQTLs
     
     #Amount of best eQTLs to plot
-    n_QTLs <- 36
+    n_QTLs <- 16
 #Create an empty dataframe to append to
 qtl_multidata <- data.frame(Development = double(), 
                                Allele = character(),
                                Expression = double(),
-                               Gene = character())
+                               QTL = character())
 #Get the data for each QTL, label it by gene and append
 for (i in 1:n_QTLs){
   qtl_mrk <- as.character(qtl_sig[i,"mrkid"])
   qtl_gene <- as.character(qtl_sig[i,"geneid"])
-  qtl_loopdata <- cbind(qtlData(qtl_mrk, qtl_gene), qtl_gene)
+  qtl_loopdata <- cbind(qtlData(qtl_mrk, qtl_gene), 
+                        QTL = paste0(
+                          substr(qtl_gene, 10, 14),
+                          "\n",
+                          substr(qtl_mrk, 5, nchar(qtl_mrk))))
   qtl_multidata <- rbind(qtl_multidata, qtl_loopdata)
 }
 
 qtl_facetplot <- ggplot(qtl_multidata, aes(Development, Expression, col=Allele))+
-  geom_smooth(se=F) +
+  geom_smooth(se=F, span = 1) +
   geom_point()+
   ggtitle(paste("Top", n_QTLs, "QTLs by importance"))+
   labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
   scale_color_manual(values = c("blue","red")) +
-  facet_wrap(vars(qtl_gene))
+  facet_wrap(vars(QTL))
 qtl_facetplot
 
-
-## Check all QTLs of one gene
-#Writes all plots to folder named after the gene, doesn't show in Rstudio itself
-    #Which gene to study?
-    qtl_gene <- "WBGene00008352"
-    dir.create("All_QTLs")
-    
-geneQTLs <- sort(qtl_rf[qtl_gene,-1], decreasing = T) #Sort all markers of one gene by importance
-for (i in 1:length(geneQTLs)){     #For each marker, starting with the strongest affinity
-  qtl_mrk <- names(geneQTLs)[i]
-  
-  qtlData(marker = qtl_mrk, gene = qtl_gene) %>%
-    qtlPlot() %>%
-    ggsave(plot = ., filename = file.path("All_QTLs", paste(qtl_gene, i, ".png", sep="_")))
-  print(paste(i, "/", length(geneQTLs)))
+# Make a facet plot of the QTLS of your own choice
+qtl_choose <- c(72, 93, 355,
+                324, 195,317,
+                263, 252, 108,
+                310, 304, 286)
+#Create an empty dataframe to append to
+qtl_choosedata <- data.frame(Development = double(), 
+                            Allele = character(),
+                            Expression = double(),
+                            Gene = character(),
+                            Marker = character(),
+                            QTL = factor())
+#Get the data for each QTL, label it by gene and append
+for (i in qtl_choose){
+  qtl_mrk <- as.character(qtl_sig[i,"mrkid"])
+  qtl_gene <- as.character(qtl_sig[i,"geneid"])
+  qtl_chooseloop <- cbind(qtlData(qtl_mrk, qtl_gene),
+                          Gene = qtl_gene,
+                          Marker = qtl_mrk,
+                          QTL = factor(paste0(
+                            WormGenes[qtl_gene, "name"],
+                            "\n",
+                            qtl_mrk)))
+  qtl_choosedata <- rbind(qtl_chooseloop, qtl_choosedata)
 }
+
+qtl_chooseplot <- ggplot(qtl_choosedata, aes(Development, Expression, col=Allele))+
+  geom_smooth(se=F, span = 1) +
+  geom_point(size = 1) +
+  labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
+  scale_color_manual(values = c("blue","red")) +
+  theme_bw() + 
+  theme(strip.text = element_text(size = 10, margin = ggplot2::margin(0.1, 0, .1, 0, "cm"))) +
+  facet_wrap(vars(QTL), scales = "free_y", nrow = 4, as.table = FALSE)
+qtl_chooseplot
+
+ggsave(plot = qtl_chooseplot,
+       filename = paste0(c("chooseplot2",
+                           qtl_choose,
+                           ".png"),
+                         collapse = "_"),
+       height = 12,
+       width = 8)
+
+
 
 ## Just straight up check all genes with their significant markers
 #Writes all plots to folder, doesn't show in Rstudio itself, can take a long time!
     dir.create("All_genes")
 
-for (generank in 1:(length(qtl_sig$importance)/10)){
+for (generank in 1:(length(qtl_sig$importance))){
   qtl_mrk <- as.character(qtl_sig[generank,"mrkid"])
   qtl_gene <- as.character(qtl_sig[generank,"geneid"])
   
@@ -674,7 +707,22 @@ for (generank in 1:(length(qtl_sig$importance)/10)){
   print(paste(generank, "/", length(qtl_sig$importance)))
 }
 
-
+    ## Check all QTLs of one gene
+    #Writes all plots to folder named after the gene, doesn't show in Rstudio itself
+    #Which gene to study?
+    qtl_gene <- "WBGene00008352"
+    dir.create("All_QTLs")
+    
+    geneQTLs <- sort(qtl_rf[qtl_gene,-1], decreasing = T) #Sort all markers of one gene by importance
+    for (i in 1:length(geneQTLs)){     #For each marker, starting with the strongest affinity
+      qtl_mrk <- names(geneQTLs)[i]
+      
+      qtlData(marker = qtl_mrk, gene = qtl_gene) %>%
+        qtlPlot() %>%
+        ggsave(plot = ., filename = file.path("All_QTLs", paste(qtl_gene, i, ".png", sep="_")))
+      print(paste(i, "/", length(geneQTLs)))
+    }
+    
 ## Plot all genes in one big plot
 # qtl_bigplot <- ggplot() +
 #   labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
