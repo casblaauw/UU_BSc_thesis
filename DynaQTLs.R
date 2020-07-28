@@ -30,6 +30,10 @@ load("RF_results2/data_pur_dev.out")
 load("RF_results2/data_pur_hs.out")
 load("RF_results2/data_pur_rec.out")
 
+devColor <- "#00BA38"
+hsColor <- "#F8766D"
+recColor <- "#619CFF"
+
 # Data on the expressed genes
 WormGenes <- read.csv("WormGenes_all.csv", header=FALSE, row.names=1)
 colnames(WormGenes) <- c("name", "start", "end", "chr")
@@ -360,6 +364,7 @@ qtlCompare <- function(df, compare){
     theme(panel.spacing = unit(0.1, "lines"),
           axis.text = element_blank(),
           axis.ticks = element_blank()) +
+    scale_colour_manual(values = c(devColor, hsColor, recColor)) +
     labs(x = "Marker position", y = "Gene position")
 }
 
@@ -382,13 +387,14 @@ qtlHotspot <- function(df){
 qtlCompHotspot <- function(df, compare){
   df <- filter(df, type == "distant")
   ggplot(data = df, aes_string("mrkstart", fill = compare)) + 
-    geom_histogram(binwidth = 2e6) + #Not sure about best binwidth
+    geom_histogram(binwidth = 1e6) + #Not sure about best binwidth
     facet_wrap(~mrkchr,nrow = 1) + 
     theme_bw() +
     theme(panel.spacing = unit(0.1, "lines"), #Mimic c-tplot style
           axis.text = element_blank(), 
           axis.ticks = element_blank()) +
     labs(x = "Marker position", y = "#eQTLs") +
+    scale_fill_manual(values = c(devColor, hsColor, recColor)) +
     scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
 }
 
@@ -414,12 +420,16 @@ qtlCompBoth <- function(df, compare){
   plot_grid(qtlCompare(df, compare) + theme(panel.grid.minor = element_blank(),
                                             plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",),
                                             axis.title.x = element_blank(),
-                                            legend.title = element_text(size = 11)
+                                            legend.title = element_text(size = 11) +
+                                      guides(color = guide_legend(override.aes = list(size = 7, 
+                                                                                      alpha = 1, 
+                                                                                      shape = "square")))
   ), 
   qtlCompHotspot(df, compare) + theme(panel.grid.minor.x = element_blank(),
                                       plot.margin = unit(c(0,0,0.2,0), "cm"),
                                       strip.background = element_blank(),
-                                      strip.text.x = element_blank()
+                                      strip.text.x = element_blank(),
+                                      legend.position = "none"
   ), 
   ncol = 1, 
   align = 'v', 
@@ -461,11 +471,7 @@ venn.diagram(list(transmute(qtl_dev, paste0(geneid, mrkid))[,1],
                   transmute(qtl_rec, paste0(geneid, mrkid))[,1]),
              filename = "venn.png",
              category.names = c("Development", "Heat stress", "Recovery"),
-             #Adapted from https://www.r-graph-gallery.com/14-venn-diagramm.html
-             # height = 480 , 
-             # width = 480 , 
-             # resolution = 200,
-             # Circles
+             #Adapted from https://www.r-graph-gallery.com/14-venn-diagramm.html             # Circles
              lwd = 1,
              # lty = 'blank',
              fill = brewer.pal(3, "Pastel2"),
@@ -508,15 +514,27 @@ qtl_recplot <- qtlCTplot(qtl_rec) + ggtitle("eQTLs found during recovery")
 qtl_recplot
 
 qtl_all <- bind_rows(
-  qtl_dev %>% mutate(condition = "dev"),
-  qtl_hs %>% mutate(condition = "hs"),
-  qtl_rec %>% mutate(condition = "rec")
+  qtl_dev %>% mutate(Condition = "Development"),
+  qtl_hs %>% mutate(Condition = "Heat stress"),
+  qtl_rec %>% mutate(Condition = "Recovery")
 )
 
-qtlCompare(qtl_all, compare = "condition") + ggtitle("eQTLs in the three conditions")
+qtl_sidebyside <- plot_grid(qtlCTplot(qtl_dev) + theme(legend.position = "none",
+                                                       plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)), 
+                            qtlCTplot(qtl_hs) + theme(legend.position = "none",
+                                                      plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)), 
+                            qtlCTplot(qtl_rec) + theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)), 
+                            qtlHotspot(qtl_dev) + theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)),
+                            qtlHotspot(qtl_hs) + theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)),
+                            qtlHotspot(qtl_dev) + theme(plot.margin = unit(c(0.2,0.2,0.2,0.2), "cm",)),
+                            align = "hv",
+                            axis = 'tblr',
+                            nrow = 2)
+qtlCompare(qtl_all, compare = "Condition") + ggtitle("eQTLs in the three conditions")
 
-qtl_bothplot <- qtlCompBoth(qtl_all, compare = "condition")
+qtl_bothplot <- qtlCompBoth(qtl_all, compare = "Condition")
 qtl_bothplot
+
 ggsave2(plot = qtl_bothplot,
         filename = paste0("bothplot_",
                           "t", nrow(qtl_all), #Total eQTLs
@@ -524,6 +542,7 @@ ggsave2(plot = qtl_bothplot,
                           "_d", sum(qtl_all$type == "distant"), #Distant eQTLS
                           ".png")
 )
+
 ### Analyse individual eQTLs ------------------------------------------------------------------------------------
 ## Prepare individual eQTL functions -------------------------
 qtlData <- function(marker = qtl_mrk, gene = qtl_gene){
@@ -699,13 +718,13 @@ qtl_comp1
 #Find unique QTLs in each dataset
 qtl_uniquemse <- anti_join(qtl_compmse, qtl_comppur, by = c('geneid', 'mrkid'))
 qtl_uniquepur <- anti_join(qtl_comppur, qtl_compmse, by = c('geneid', 'mrkid'))
-qtl_unique <- bind_rows(qtl_uniquemse, qtl_uniquepur)
+qtl_uniqueimp <- bind_rows(qtl_uniquemse, qtl_uniquepur)
 nrow(qtl_uniquemse)
 nrow(qtl_uniquepur)
 qtl_uniquemse %>% count(type)
 qtl_uniquepur %>% count(type)
 
-qtl_comp2 <- qtlCompare(qtl_unique, "data") + ggtitle("Unique eQTLs per importance marker")
+qtl_comp2 <- qtlCompare(qtl_uniqueimp, "data") + ggtitle("Unique eQTLs per importance marker")
 qtl_comp2
 
 qtl_compboth <- plot_grid(qtl_comp1, qtl_comp2, align = "h", labels = "AUTO")
@@ -713,4 +732,4 @@ ggsave2(qtl_compboth, filename = "add2.png", width = 30, height = 15, units = "c
 
 randomForestExplainer::explain_forest(rf.res)
 
-##################### END ##############################################################################################
+##################### END ###########e###################################################################################
