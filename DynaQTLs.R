@@ -692,7 +692,7 @@ ggsave(plot = qtl_chooseplot,
 # Facet plot for genes per bin
   
   n_QTLs <- 9
-  binID <- c((2.5e+06,3.5e+06], "II")
+  binID <- c("(2.5e+06,3.5e+06]", "II")
   qtl_bin <- qtl_all %>%
     filter(type == "distant") %>%
     mutate(bin = cut_width(mrkstart, 1e6)) %>%
