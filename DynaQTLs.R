@@ -15,17 +15,10 @@ library(randomForestExplainer)
 
 ## Needed data --------------------------------------------------------------------------------
 # Random forest results
-load("RF_results2/data_expvar_perm.out")
-load("RF_results2/data_expvar_dev.out")
-load("RF_results2/data_expvar_hs.out")
-load("RF_results2/data_expvar_rec.out")
-
-load("RF_results2/data_incmse_perm.out")
 load("RF_results2/data_incmse_dev.out")
 load("RF_results2/data_incmse_hs.out")
 load("RF_results2/data_incmse_rec.out")
 
-load("RF_results2/data_pur_perm.out")
 load("RF_results2/data_pur_dev.out")
 load("RF_results2/data_pur_hs.out")
 load("RF_results2/data_pur_rec.out")
@@ -755,21 +748,6 @@ for (generank in 1:(length(qtl_sig$importance))){
       print(paste(i, "/", length(geneQTLs)))
     }
     
-## Plot all genes in one big plot
-# qtl_bigplot <- ggplot() +
-#   labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
-#   scale_color_manual(values = c("blue","red"))
-# for (generank in 1:200){
-#   qtl_mrk <- as.character(qtl_sig[generank,1])
-#   qtl_gene <- rownames(qtl_sig[generank,])
-#   qtl_bigdata <- qtlData(qtl_mrk, qtl_gene)
-#   
-#   qtl_bigplot <- qtl_bigplot +
-#     stat_smooth(qtl_bigdata, geom="line", mapping = aes(Development, Expression, col=Allele), se=F, alpha=0.2)
-# 
-#   print(paste(generank, "/", length(qtl_sig$Importance)))
-# }
-# qtl_bigplot
 
 ## Supplemental ---------------------------------------------------
 # Figure 1
@@ -831,26 +809,6 @@ qtl_compboth <- plot_grid(qtl_comp1, qtl_comp2, align = "h", labels = "AUTO")
 ggsave2(qtl_compboth, filename = "add2.png", width = 30, height = 15, units = "cm")
 
 #Find the major hotspot bins
-
-# qtl_hotspotmrks <- qtl_all %>% 
-#   group_by(mrkid, mrkstart, mrkchr) %>% 
-#   summarise(n = n(), .groups = "keep") %>% 
-#   arrange(desc(n)) %>%
-#   filter(n > 1)
-# 
-# qtl_hotspotbins <-  qtl_all %>% 
-#   filter(type == "distant") %>%
-#   mutate(bin = cut_width(mrkstart, 1e6)) %>%
-#   group_by(bin, mrkchr, condition) %>% 
-#   summarise(n = n(), .groups = "keep") %>% 
-#   arrange(mrkchr) %>%
-#   pivot_wider(names_from = condition, values_from = n) 
-# qtl_hotspotbins[is.na(qtl_hotspotbins)] <- 0
-# qtl_hotspotbins <- qtl_hotspotbins %>%
-#   mutate(total = dev + hs + rec) %>%
-#   select(bin, mrkchr, dev, hs, rec, total) %>%
-#   arrange(desc(total))
-
 
 qtl_hotspotuni <- qtl_all %>%
   filter(type == "distant") %>%
