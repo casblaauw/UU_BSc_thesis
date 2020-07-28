@@ -558,6 +558,9 @@ ggsave2(plot = qtl_uniqueplot,
         width = 8,
         height = 6)
 
+
+
+
 ### Analyse individual eQTLs ------------------------------------------------------------------------------------
 ## Prepare individual eQTL functions -------------------------
 qtlData <- function(marker = qtl_mrk, gene = qtl_gene){
@@ -686,7 +689,41 @@ ggsave(plot = qtl_chooseplot,
        height = 12,
        width = 8)
 
+# Facet plot for genes per bin
+  
+  n_QTLs <- 9
+  binID <- c((2.5e+06,3.5e+06], "II")
+  qtl_bin <- qtl_all %>%
+    filter(type == "distant") %>%
+    mutate(bin = cut_width(mrkstart, 1e6)) %>%
+    distinct(bin, genename, .keep_all = TRUE) %>%
+    filter(bin == binID[1], as.character(mrkchr) == binID[2])
 
+qtl_bindata <- data.frame(Development = double(), 
+                          Allele = character(),
+                          Expression = double(),
+                          Gene = character(),
+                          Marker = character(),
+                          QTL = factor())
+for (i in 1:n_QTLs){
+  qtl_gene <- as.character(qtl_bin[i,"geneid"])
+  qtl_mrk <- as.character(qtl_bin[i,"mrkid"])
+  qtl_binloop <- cbind(qtlData(qtl_mrk, qtl_gene), 
+                       QTL = factor(paste0(
+                         WormGenes[qtl_gene, "name"],
+                         "\n",
+                         qtl_mrk)))
+  qtl_bindata <- rbind(qtl_bindata, qtl_binloop)
+}
+
+qtl_binplot <- ggplot(qtl_bindata, aes(Development, Expression, col=Allele))+
+  geom_smooth(se=F, span = 1) +
+  geom_point()+
+  ggtitle(paste("Top", n_QTLs, "QTLs of", binID[1], binID[2]))+
+  labs(x = "Projection on development axis [arbitrary units]", y = "Expression level") +
+  scale_color_manual(values = c("blue","red")) +
+  facet_wrap(vars(QTL))
+qtl_binplot
 
 ## Just straight up check all genes with their significant markers
 #Writes all plots to folder, doesn't show in Rstudio itself, can take a long time!
