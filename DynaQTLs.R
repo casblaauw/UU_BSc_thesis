@@ -151,44 +151,6 @@ projection_all <- data.frame(projection_all)
 
     
     
-## Exploratory plots -----------------------------------------------------------
-    #Distributions of total developing worms and developing RILs among development axis
-    # Prepare the data
-    ril.all <- projection_all
-    ril.all <- ril.all[!duplicated(ril.all$genotype),]
-    ril.all[ril.all == "NIL" | ril.all == "PL"] <- "Other"
-    
-    ril.dev <- projection_all[projection_all$experimentype == "Dev",]
-    ril.dev <- ril.dev[!duplicated(ril.dev$genotype),]
-    ril.dev[ril.dev == "NIL" | ril.dev == "PL"] <- "Other"
-    
-    ril.hs <- projection_all[projection_all$experimentype == "HS",]
-    ril.hs <- ril.hs[!duplicated(ril.hs$genotype),]
-    ril.hs[ril.hs == "NIL" | ril.hs == "PL"] <- "Other"
-    
-    ril.rec <- projection_all[projection_all$experimentype == "Rec",]
-    ril.rec <- ril.rec[!duplicated(ril.rec$genotype),]
-    ril.rec[ril.rec == "NIL" | ril.rec == "PL"] <- "Other"
-    
-    
-    ril.devplot = ggplot(data=ril.all, aes(x=line, y=devprojection, fill = line)) +
-      ggtitle("Distribution of developing worms on development axis by line type") +
-      ylab("Projection on development axis [arbitrary units]") + 
-      xlab("Line type") +
-      scale_fill_manual(values = c("slateblue2", "tomato2")) +
-      geom_violin() +
-      coord_flip()
-    ril.devplot   
-    
-    ril.allplot = ggplot(data=ril.dev, aes(x=line, y=devprojection, fill = line)) +
-      ggtitle("Distribution of all worms on development axis by line type") +
-      ylab("Projection on development axis [arbitrary units]") + 
-      xlab("Line type") +
-      scale_fill_manual(values = c("slateblue2", "tomato2")) +
-      geom_violin() +
-      coord_flip()
-    ril.allplot
-    
 ## test random forest run ---------------------------------------------------
     
     ## example gene from Francesconi & Lehner 
@@ -702,14 +664,14 @@ for (i in 1:length(geneQTLs)){     #For each marker, starting with the strongest
 #Writes all plots to folder, doesn't show in Rstudio itself, can take a long time!
     dir.create("All_genes")
 
-for (generank in 1:length(qtl_sig$Importance)){
-  qtl_mrk <- as.character(qtl_sig[generank,1])
-  qtl_gene <- rownames(qtl_sig[generank,])
+for (generank in 1:(length(qtl_sig$importance)/10)){
+  qtl_mrk <- as.character(qtl_sig[generank,"mrkid"])
+  qtl_gene <- as.character(qtl_sig[generank,"geneid"])
   
   qtlData(qtl_mrk, qtl_gene) %>%
     qtlPlot() %>%
     ggsave(plot = ., file.path("All_genes", paste(generank, qtl_gene, qtl_mrk, ".png", sep="_")))
-  print(paste(generank, "/", length(qtl_sig$Importance)))
+  print(paste(generank, "/", length(qtl_sig$importance)))
 }
 
 
