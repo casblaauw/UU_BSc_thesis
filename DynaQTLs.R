@@ -412,9 +412,9 @@ qtl_hs <- qtlGenome(data.incmse.hs, cutoff = 0.2)
 qtl_rec <- qtlGenome(data.incmse.rec, cutoff = 0.2)
 head(qtl_dev)
 qtl_all <- bind_rows(
-  qtl_dev %>% mutate(Condition = "Development"),
-  qtl_hs %>% mutate(Condition = "Heat stress"),
-  qtl_rec %>% mutate(Condition = "Recovery")
+  qtl_dev %>% mutate(condition = "dev"),
+  qtl_hs %>% mutate(condition = "hs"),
+  qtl_rec %>% mutate(condition = "rec")
 )
 
 #Count total eQTLs
@@ -524,7 +524,7 @@ ggsave2(plot = qtl_sidebyside,
 
 
   # Create a plot of all eQTLs per condition overlaid
-qtl_bothplot <- qtlCompBoth(qtl_all, compare = "Condition")
+qtl_bothplot <- qtlCompBoth(qtl_all, compare = "condition")
 qtl_bothplot
 
 ggsave2(plot = qtl_bothplot,
@@ -534,11 +534,6 @@ ggsave2(plot = qtl_bothplot,
                           "_d", sum(qtl_all$type == "distant"), #Distant eQTLS
                           ".png")
 )
-qtl_hotspotmrks <- qtl_all %>% 
-  group_by(mrkid, mrkstart, mrkchr) %>% 
-  summarise(n = n(), .groups = "keep") %>% 
-  arrange(desc(n)) %>%
-  filter(n > 1)
 
 
     #Find the unique eQTLs per condition
@@ -546,14 +541,14 @@ qtl_uniquedev <- anti_join(qtl_dev, rbind(qtl_hs, qtl_rec), by = c('geneid', 'mr
 qtl_uniquehs <- anti_join(qtl_hs, rbind(qtl_dev, qtl_rec), by = c('geneid', 'mrkid'))
 qtl_uniquerec <- anti_join(qtl_rec, rbind(qtl_dev, qtl_hs), by = c('geneid', 'mrkid'))
 qtl_uniqueall <- bind_rows(
-  qtl_uniquedev %>% mutate(Condition = "Development"), 
-  qtl_uniquehs %>% mutate(Condition = "Heat stress"),
-  qtl_uniquerec %>% mutate(Condition = "Recovery"))
+  qtl_uniquedev %>% mutate(condition = "Development"), 
+  qtl_uniquehs %>% mutate(condition = "Heat stress"),
+  qtl_uniquerec %>% mutate(condition = "Recovery"))
 
     #Distribution of local and distant amongst the unique eQTLs
-qtl_uniqueall %>% group_by(Condition) %>% count(type)
+qtl_uniqueall %>% group_by(condition) %>% count(type)
 
-qtl_uniqueplot <- qtlCompBoth(qtl_uniqueall, compare = "Condition")
+qtl_uniqueplot <- qtlCompBoth(qtl_uniqueall, compare = "condition")
 ggsave2(plot = qtl_uniqueplot,
         filename = paste0("uniqueplot_",
                           "d", nrow(qtl_uniquedev),
@@ -798,6 +793,64 @@ qtl_comp2
 qtl_compboth <- plot_grid(qtl_comp1, qtl_comp2, align = "h", labels = "AUTO")
 ggsave2(qtl_compboth, filename = "add2.png", width = 30, height = 15, units = "cm")
 
+#Find the major hotspot bins
+
+# qtl_hotspotmrks <- qtl_all %>% 
+#   group_by(mrkid, mrkstart, mrkchr) %>% 
+#   summarise(n = n(), .groups = "keep") %>% 
+#   arrange(desc(n)) %>%
+#   filter(n > 1)
+# 
+# qtl_hotspotbins <-  qtl_all %>% 
+#   filter(type == "distant") %>%
+#   mutate(bin = cut_width(mrkstart, 1e6)) %>%
+#   group_by(bin, mrkchr, condition) %>% 
+#   summarise(n = n(), .groups = "keep") %>% 
+#   arrange(mrkchr) %>%
+#   pivot_wider(names_from = condition, values_from = n) 
+# qtl_hotspotbins[is.na(qtl_hotspotbins)] <- 0
+# qtl_hotspotbins <- qtl_hotspotbins %>%
+#   mutate(total = dev + hs + rec) %>%
+#   select(bin, mrkchr, dev, hs, rec, total) %>%
+#   arrange(desc(total))
+
+
+qtl_hotspotuni <- qtl_all %>%
+  filter(type == "distant") %>%
+  mutate(bin = cut_width(mrkstart, 1e6)) %>%
+  distinct(bin, genename, .keep_all = TRUE) %>%
+  group_by(bin, mrkchr) %>% 
+  summarise(total = n(), .groups = "keep")
+qtl_hotspotdev <- qtl_dev %>%
+  filter(type == "distant") %>%
+  mutate(bin = cut_width(mrkstart, 1e6)) %>%
+  distinct(bin, genename, .keep_all = TRUE) %>%
+  group_by(bin, mrkchr) %>% 
+  summarise(dev = n(), .groups = "keep")
+qtl_hotspoths <- qtl_hs %>%
+  filter(type == "distant") %>%
+  mutate(bin = cut_width(mrkstart, 1e6)) %>%
+  distinct(bin, genename, .keep_all = TRUE) %>%
+  group_by(bin, mrkchr) %>% 
+  summarise(hs = n(), .groups = "keep") 
+qtl_hotspotrec <- qtl_rec %>%
+  filter(type == "distant") %>%
+  mutate(bin = cut_width(mrkstart, 1e6)) %>%
+  distinct(bin, genename, .keep_all = TRUE) %>%
+  group_by(bin, mrkchr) %>% 
+  summarise(rec = n(), .groups = "keep")
+
+
+qtl_hotspottotal <- qtl_hotspotuni %>%
+  left_join(qtl_hotspotdev, by = c("bin", "mrkchr")) %>%
+  left_join(qtl_hotspoths, by = c("bin", "mrkchr")) %>%
+  left_join(qtl_hotspotrec, by = c("bin", "mrkchr")) %>%
+  mutate(across(c(total, dev, hs, rec), replace_na, 0)) %>%
+  select(bin, chr = mrkchr, dev, hs, rec, total)
+
+
+write.table(qtl_hotspottotal, file = "hotspotbins2.txt", sep = "\t", quote = FALSE, row.names = F)
+write.table(qtl_hotspottotal %>% arrange(desc(total)) %>% head(10), file = "hotspotbinstop2.txt", sep = "\t", quote = FALSE, row.names = F)
 randomForestExplainer::explain_forest(rf.res)
 
 ##################### END ###########e###################################################################################
