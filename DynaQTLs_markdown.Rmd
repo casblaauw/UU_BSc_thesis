@@ -1,0 +1,180 @@
+---
+title: "Dynamic eQTLs during development and heat stress"
+author: Cas Blaauw
+output: html_document
+---
+
+# Load libraries and data
+
+### Libraries
+```{r}
+library(openxlsx)
+library(gplots)
+library(cowplot)
+library(tidyverse)
+library(forcats)
+library(reshape2)
+library(VennDiagram)
+library(RColorBrewer)
+library(randomForest)
+library(randomForestExplainer)
+library(glue)
+```
+
+### Expression data
+
+Describes the expression for each gene for each worm.
+
+```{r}
+gexp <- list(
+  dev = t(read.delim("Data/Snoek_Sterken_CT_gene_expression_RILs.txt", sep = "\t")),
+  hs = t(read.delim("Data/Snoek_Sterken_HS_gene_expression_RILs.txt", sep = "\t")),
+  rec = t(read.delim("Data/Snoek_Sterken_REC_gene_expression_RILs.txt", sep = "\t"))
+)
+head(gexp$dev[,1:5])
+dim(gexp$dev)
+```
+
+### Projection axis
+
+Describes the developmental, heat shock and recovery state for each worm.
+
+```{r}
+load("Data/projection_alldata.rdata")
+dim(projection_all)
+
+proj <- list(
+  dev = filter(projection_all, experimentype == "Dev", line == "RIL", genotype %in% colnames(gm$dev)),
+  hs = filter(projection_all, experimentype == "HS", line == "RIL", genotype %in% colnames(gm$hs)),
+  rec = filter(projection_all, experimentype == "Rec", line == "RIL", genotype %in% colnames(gm$rec))
+)
+
+head(proj$dev)
+```
+
+### Gene map
+
+Describes the present genomic sections/alleles in each worm.
+
+```{r}
+gm <- list(
+  dev = t(read.delim("Data/map_CT.txt", sep = "\t")),
+  hs = t(read.delim("Data/map_HS.txt", sep = "\t")),
+  rec = t(read.delim("Data/map_REC.txt", sep = "\t"))
+)
+
+head(gm$dev[,1:5])
+```
+### Genome info
+
+Maps the genetic regions/alleles to coordinates on the genome.
+
+```{r}
+mrk <- read_tsv("Data/marker.txt", show_col_types = FALSE)
+head(mrk)
+dim(mrk)
+```
+
+### Transcriptome info
+
+Maps the expressed genes to coordinates on the genome.
+
+```{r}
+gi <- read_csv("Data/WormGenes_all.csv", col_names = c("gene", "name", "start", "end", "chr"), show_col_types = FALSE)
+head(gi)
+dim(gi)
+```
+
+### Random forest results
+```{r}
+load("Data/RF_results2/data_incmse_dev.out")
+load("Data/RF_results2/data_incmse_hs.out")
+load("Data/RF_results2/data_incmse_rec.out")
+
+load("Data/RF_results2/data_pur_dev.out")
+load("Data/RF_results2/data_pur_hs.out")
+load("Data/RF_results2/data_pur_rec.out")
+```
+
+# Reshape data
+
+### Remove duplicated RILs in projection data
+```{r}
+proj_clean <- map(proj, ~distinct(.x, genotype, .keep_all = TRUE))
+
+map2(proj, proj_clean, ~glue("Total: {nrow(.x)}, deduplicated: {nrow(.y)}"))
+```
+
+### Check that all samples have a projection
+
+```{r}
+# Check which samples from the genetic map aren't in the projection
+map2(gm, proj_d, ~which(!rownames(.x) %in% pull(.y, genotype)))
+
+# Check which samples from the projection aren't in the genetic map
+map2(gm, proj_d, ~which(!pull(.y, genotype) %in% rownames(.x)))
+
+# Keep only the samples which have a projection
+gm_clean <- map2(gm, proj_d, ~.x[rownames(.x) %in% pull(.y, genotype)])
+```
+
+### Remove redundant markers
+
+Many markers share their pattern across all worms, due to the limited size of the population, and therefore don't add any information.
+
+
+# Alternative
+
+```{r}
+# Prepare projection data
+proj_df <- projection_all %>% 
+  distinct(genotype, experimentype, .keep_all = TRUE) %>% 
+  mutate(dynamic = tolower(experimentype)) %>% 
+  select(genotype, dynamic, contains('projection'))
+
+# Prepare genome data
+gm_df <- list(
+  dev = read.delim("Data/map_CT.txt", sep = "\t"),
+  hs = read.delim("Data/map_HS.txt", sep = "\t"),
+  rec = read.delim("Data/map_REC.txt", sep = "\t")
+) %>%
+  map_dfr(~ .x %>% 
+            # Remove redundant markers that share the same pattern across all worms
+            distinct() %>% 
+            # Transpose to get worms as rows
+            t() %>% as.data.frame() %>% rownames_to_column("genotype"), 
+          .id = "dynamic")
+
+meta <- inner_join(meta, gm_df, by = c("genotype", "dynamic"))
+
+# Prepare transcriptome data
+gexp_df <- list(
+  dev = read.delim("Data/Snoek_Sterken_CT_gene_expression_RILs.txt", sep = "\t"),
+  hs = read.delim("Data/Snoek_Sterken_HS_gene_expression_RILs.txt", sep = "\t"),
+  rec = read.delim("Data/Snoek_Sterken_REC_gene_expression_RILs.txt", sep = "\t")
+) %>% 
+  map_dfr(~ .x %>% 
+            # Transpose to get worms as rows
+            t() %>% as.data.frame() %>% rownames_to_column("genotype"),
+          .id = "dynamic")
+
+
+# Integrate into one df
+meta <- proj_df %>% 
+  inner_join(gm_df, by = c("genotype", "dynamic")) %>% 
+  inner_join(gexp_df, by = c("genotype", "dynamic"))
+```
+
+
+```{r}
+dynamic_type = "devprojection"
+gene_name = "WBGene00019969"
+
+meta_x <- meta %>% 
+  select({{ dynamic_type }}, contains("Pred"))
+meta_y <- meta %>% 
+  pull({{ gene_name }})
+
+randomForest(meta_y ~ ., data = meta_x)
+```
+
