@@ -12,13 +12,15 @@ library(openxlsx)
 library(gplots)
 library(cowplot)
 library(tidyverse)
-library(forcats)
 library(reshape2)
 library(VennDiagram)
 library(RColorBrewer)
 library(randomForest)
 library(randomForestExplainer)
 library(glue)
+library(magrittr)
+library(tictoc)
+library(furrr)
 ```
 
 ### Expression data
@@ -27,9 +29,9 @@ Describes the expression for each gene for each worm.
 
 ```{r}
 gexp <- list(
-  dev = t(read.delim("Data/Snoek_Sterken_CT_gene_expression_RILs.txt", sep = "\t")),
-  hs = t(read.delim("Data/Snoek_Sterken_HS_gene_expression_RILs.txt", sep = "\t")),
-  rec = t(read.delim("Data/Snoek_Sterken_REC_gene_expression_RILs.txt", sep = "\t"))
+  dev = read.delim("Data/Snoek_Sterken_CT_gene_expression_RILs.txt", sep = "\t"),
+  hs = read.delim("Data/Snoek_Sterken_HS_gene_expression_RILs.txt", sep = "\t"),
+  rec = read.delim("Data/Snoek_Sterken_REC_gene_expression_RILs.txt", sep = "\t")
 )
 head(gexp$dev[,1:5])
 dim(gexp$dev)
@@ -41,15 +43,8 @@ Describes the developmental, heat shock and recovery state for each worm.
 
 ```{r}
 load("Data/projection_alldata.rdata")
+projection_all <- mutate(projection_all, dynamic = tolower(experimentype))
 dim(projection_all)
-
-proj <- list(
-  dev = filter(projection_all, experimentype == "Dev", line == "RIL", genotype %in% colnames(gm$dev)),
-  hs = filter(projection_all, experimentype == "HS", line == "RIL", genotype %in% colnames(gm$hs)),
-  rec = filter(projection_all, experimentype == "Rec", line == "RIL", genotype %in% colnames(gm$rec))
-)
-
-head(proj$dev)
 ```
 
 ### Gene map
@@ -58,13 +53,14 @@ Describes the present genomic sections/alleles in each worm.
 
 ```{r}
 gm <- list(
-  dev = t(read.delim("Data/map_CT.txt", sep = "\t")),
-  hs = t(read.delim("Data/map_HS.txt", sep = "\t")),
-  rec = t(read.delim("Data/map_REC.txt", sep = "\t"))
+  dev = read.delim("Data/map_CT.txt", sep = "\t"),
+  hs = read.delim("Data/map_HS.txt", sep = "\t"),
+  rec = read.delim("Data/map_REC.txt", sep = "\t")
 )
 
 head(gm$dev[,1:5])
 ```
+
 ### Genome info
 
 Maps the genetic regions/alleles to coordinates on the genome.
@@ -96,85 +92,77 @@ load("Data/RF_results2/data_pur_hs.out")
 load("Data/RF_results2/data_pur_rec.out")
 ```
 
-# Reshape data
 
-### Remove duplicated RILs in projection data
-```{r}
-proj_clean <- map(proj, ~distinct(.x, genotype, .keep_all = TRUE))
-
-map2(proj, proj_clean, ~glue("Total: {nrow(.x)}, deduplicated: {nrow(.y)}"))
-```
-
-### Check that all samples have a projection
+# Prepare the data
 
 ```{r}
-# Check which samples from the genetic map aren't in the projection
-map2(gm, proj_d, ~which(!rownames(.x) %in% pull(.y, genotype)))
-
-# Check which samples from the projection aren't in the genetic map
-map2(gm, proj_d, ~which(!pull(.y, genotype) %in% rownames(.x)))
-
-# Keep only the samples which have a projection
-gm_clean <- map2(gm, proj_d, ~.x[rownames(.x) %in% pull(.y, genotype)])
-```
-
-### Remove redundant markers
-
-Many markers share their pattern across all worms, due to the limited size of the population, and therefore don't add any information.
-
-
-# Alternative
-
-```{r}
-# Prepare projection data
-proj_df <- projection_all %>% 
-  distinct(genotype, experimentype, .keep_all = TRUE) %>% 
-  mutate(dynamic = tolower(experimentype)) %>% 
-  select(genotype, dynamic, contains('projection'))
-
-# Prepare genome data
-gm_df <- list(
-  dev = read.delim("Data/map_CT.txt", sep = "\t"),
-  hs = read.delim("Data/map_HS.txt", sep = "\t"),
-  rec = read.delim("Data/map_REC.txt", sep = "\t")
-) %>%
-  map_dfr(~ .x %>% 
-            # Remove redundant markers that share the same pattern across all worms
-            distinct() %>% 
-            # Transpose to get worms as rows
-            t() %>% as.data.frame() %>% rownames_to_column("genotype"), 
-          .id = "dynamic")
-
-meta <- inner_join(meta, gm_df, by = c("genotype", "dynamic"))
-
-# Prepare transcriptome data
-gexp_df <- list(
-  dev = read.delim("Data/Snoek_Sterken_CT_gene_expression_RILs.txt", sep = "\t"),
-  hs = read.delim("Data/Snoek_Sterken_HS_gene_expression_RILs.txt", sep = "\t"),
-  rec = read.delim("Data/Snoek_Sterken_REC_gene_expression_RILs.txt", sep = "\t")
-) %>% 
-  map_dfr(~ .x %>% 
-            # Transpose to get worms as rows
-            t() %>% as.data.frame() %>% rownames_to_column("genotype"),
-          .id = "dynamic")
-
-
-# Integrate into one df
-meta <- proj_df %>% 
-  inner_join(gm_df, by = c("genotype", "dynamic")) %>% 
-  inner_join(gexp_df, by = c("genotype", "dynamic"))
+# Combine projection, gene map, and gene expression for each dynamic into one list of dfs
+samples <- map(
+  c(dev = 'dev', hs = 'hs', rec = 'rec'), 
+  function(dynamic) {
+    # Subset projection to only include current dynamic
+    proj_df <- filter(projection_all, dynamic == dynamic, line == "RIL") %>% 
+      distinct(genotype, .keep_all = TRUE) %>% # Deduplicate worms within one dynamic
+      select(genotype, dynamic, contains('projection'))
+    
+    # Load gene map for this dynamic
+    gm_df <- gm[[dynamic]] %>% 
+      distinct(.keep_all = TRUE) %>% 
+      t() %>% # Transpose to get worms as rows
+      as.data.frame() %>% 
+      rownames_to_column("genotype")
+    
+    # Load gene expression for this dynamic
+    gexp_df <- gexp[[dynamic]] %>% 
+      t() %>% # Transpose to get worms as rows
+      as.data.frame() %>% 
+      rownames_to_column("genotype")
+    
+    # Combine proj, gm and gexp into one data frame
+    # Use inner_join to keep only those worms that are present in all three datasets
+    merged <- inner_join(proj_df, gm_df, by = 'genotype') %>% 
+      inner_join(gexp_df, by = 'genotype')
+    
+    return(merged)
+  })
 ```
 
 
+
 ```{r}
-dynamic_type = "devprojection"
+dynamic_type = "dev"
 gene_name = "WBGene00019969"
 
-meta_x <- meta %>% 
-  select({{ dynamic_type }}, contains("Pred"))
-meta_y <- meta %>% 
-  pull({{ gene_name }})
-
-randomForest(meta_y ~ ., data = meta_x)
+samples_x <- samples %>% 
+  extract2(dynamic_type) %>% 
+  select(genotype, glue("{dynamic_type}projection"), contains("Pred")) %>% 
+  column_to_rownames("genotype")
+samples_y <- samples %>% 
+  extract2(dynamic_type) %>% 
+  select(contains("WBGene"))
 ```
+
+
+```{r}
+plan(multisession, workers = 3) # Make map parallel to speed up random forests
+tictoc::tic()
+rf_results <- samples_y %>%
+  select(seq(1, ncol(.), 100)) %>% #Subset to every 100 genes if desired
+  future_map_dfr(
+    ~ randomForest(
+      .x ~ ., # Match input from map (.x, gene expression column) with all variables (.) from data (samples_x aka projection+markers)
+      data = samples_x,
+      proximity = TRUE,
+      importance = TRUE,
+      ntree = 5000,
+      nodesize = 2,
+      maxnodes = 8
+    )$importance[, 1], 
+    .id = 'gene',
+    .options = future_options(seed = TRUE)
+  )
+tictoc::toc()
+```
+
+
 
