@@ -1,0 +1,345 @@
+---
+title: "Dynamic eQTLs during development and heat stress - mapping"
+author: Cas Blaauw
+output: html_document
+params:
+  # Data path
+  data_dir: 'Data/'
+  # Run options
+  subset: TRUE
+  dynamics: !r c('dev', 'hs')
+  # Multicore parameters for future/furrr
+  future_plan: multisession
+  future_threads: 10 # Above 6 gave no clear benefit on local machine combined with ranger = NULL
+  ranger_threads: NULL # NULL uses all available cores
+
+---
+
+A script to map dynamic eQTLs using random forests.
+Can be ran in one of three ways:
+* Interactively, by opening it in RStudio and running the chunks
+* Full run, by opening it in RStudio and pressing 'Knit'/Ctrl+Shift+K
+* From the command line, with `Rscript -e "rmarkdown::render('DynaQTLs_markdown.Rmd', params = list(future_workers = 3))"`
+  + `params` is optional, and provided here as an example: it allows you to override any of the parameters defined in the yaml header above.
+  + You will need to make sure pandoc is set up to run this from the command line. 
+
+
+# Load libraries and data
+
+### Libraries
+```{r}
+# Data reading and wrangling
+library(dplyr)
+library(stringr)
+library(purrr)
+library(readr)
+library(glue)
+library(magrittr)
+
+# Mapping
+library(tictoc)
+library(furrr)
+library(randomForest)
+library(randomForestExplainer)
+library(ranger)
+
+# Analysis
+library(gplots)
+library(cowplot)
+library(VennDiagram)
+library(RColorBrewer)
+```
+
+### Expression data
+
+Describes the expression for each gene for each worm.
+
+```{r}
+gexp <- list(
+  dev = read.delim(glue("{params$data_dir}/Snoek_Sterken_CT_gene_expression_RILs.txt"), sep = "\t"),
+  hs = read.delim(glue("{params$data_dir}/Snoek_Sterken_HS_gene_expression_RILs.txt"), sep = "\t"),
+  rec = read.delim(glue("{params$data_dir}/Snoek_Sterken_REC_gene_expression_RILs.txt"), sep = "\t")
+)
+head(gexp$dev[,1:5])
+dim(gexp$dev)
+```
+
+### Projection axis
+
+Describes the developmental, heat shock and recovery state for each worm.
+
+```{r}
+load(glue("{params$data_dir}/projection_alldata.rdata"))
+projection_all <- mutate(projection_all, dynamic = tolower(experimentype))
+dim(projection_all)
+```
+
+### Gene map
+
+Describes the present genomic sections/alleles in each worm.
+
+```{r}
+gm <- list(
+  dev = read.delim(glue("{params$data_dir}/map_CT.txt"), sep = "\t"),
+  hs = read.delim(glue("{params$data_dir}/map_HS.txt"), sep = "\t"),
+  rec = read.delim(glue("{params$data_dir}/map_REC.txt"), sep = "\t")
+)
+
+head(gm$dev[,1:5])
+```
+
+### Genome info
+
+Maps the genetic regions/alleles to coordinates on the genome.
+
+```{r}
+mrk <- read_tsv(glue("{params$data_dir}/marker.txt"), show_col_types = FALSE)
+head(mrk)
+dim(mrk)
+```
+
+### Transcriptome info
+
+Maps the expressed genes to coordinates on the genome.
+
+```{r}
+gi <- read_csv(glue("{params$data_dir}/WormGenes_all.csv"), col_names = c("gene", "name", "start", "end", "chr"), show_col_types = FALSE)
+head(gi)
+dim(gi)
+```
+
+### Random forest results
+```{r}
+load(glue("{params$data_dir}/RF_results2/data_incmse_dev.out"))
+load(glue("{params$data_dir}/RF_results2/data_incmse_hs.out"))
+load(glue("{params$data_dir}/RF_results2/data_incmse_rec.out"))
+
+load(glue("{params$data_dir}/RF_results2/data_pur_dev.out"))
+load(glue("{params$data_dir}/RF_results2/data_pur_hs.out"))
+load(glue("{params$data_dir}/RF_results2/data_pur_rec.out"))
+```
+
+
+# Prepare the data
+
+For each dynamic, we gather the projections, gene map, and gene expression data, and merge them into one data frame.
+As this is done within `map()`, we receive a list of data frames, one for each dynamic.
+
+```{r}
+samples <- map(
+  c(dev = 'dev', hs = 'hs', rec = 'rec'), 
+  
+  function(dynamic) {
+    # Subset projection to only include current dynamic
+    proj_df <- filter(projection_all, dynamic == dynamic, line == "RIL") %>% 
+      distinct(genotype, .keep_all = TRUE) %>% # Deduplicate worms within one dynamic
+      select(genotype, dynamic, contains('projection'))
+    
+    # Load gene map for this dynamic
+    gm_df <- gm[[dynamic]] %>% 
+      distinct(.keep_all = TRUE) %>% 
+      t() %>% # Transpose to get worms as rows
+      as_tibble(rownames = "genotype")
+    
+    # Load gene expression for this dynamic
+    gexp_df <- gexp[[dynamic]] %>% 
+      t() %>% # Transpose to get worms as rows
+      as_tibble(rownames = "genotype")
+    
+    # Combine proj, gm and gexp into one data frame
+      # Use inner_join to keep only those worms that are present in all three datasets
+    merged <- inner_join(proj_df, gm_df, by = 'genotype') %>% 
+      inner_join(gexp_df, by = 'genotype')
+    
+    return(merged)
+  }
+)
+
+
+print(map(samples, head))
+saveRDS(samples, file = glue("{params$data_dir}/samples.rds"))
+```
+
+
+# Hyperparameter selection
+
+## Get OOB error for different hyperparameters
+
+```{r}
+# set.seed(2021)
+# plan(params$future_plan, workers = params$future_threads) # Make map parallel to speed up random forests
+# params_cv <- expand.grid(mtry = floor(exp(log(10)*seq(log10(2),log10(254), length.out = 8))), # Log spacing because optimum seemed between 2 and 50, with linear increase from 30-250
+#             num.trees = c(1000, 2000),
+#             min.node.size = c(2, 5, 8), # Compare 2 (prev value) with 5 (default) and 8 (since higher seems better?)
+#             max.depth = c(0, 8))  # Compare 8 (prev value) with 0 (unlimited, default) 
+# 
+# dynamic_type <- 'dev'
+# 
+# # First, gather the data
+# samples_x <- samples %>% 
+#   extract2(dynamic_type) %>% 
+#   select(genotype, glue("{dynamic_type}projection"), contains("Pred")) %>% 
+#   column_to_rownames("genotype")
+# 
+# samples_y <- samples %>% 
+#   extract2(dynamic_type) %>% 
+#   select(contains("WBGene"))
+# 
+# ## Optional: Subset to 1 in every 100 genes (for test runs)
+# if (params$subset) {
+#   samples_y <- samples_y %>% select(sample.int(ncol(.), ncol(.)/100))
+# }
+
+# param_error <- pmap_dfr(
+#   params_cv,
+#   function(mtry, num.trees, min.node.size, max.depth){
+#     param_string <- glue("mtry: {mtry}, num.trees: {num.trees}, min.node.size: {min.node.size}, max.depth: {max.depth}")
+#     tictoc::tic(param_string)
+#     
+#     error_vec <- map_dfc(
+#       samples_y,
+#       ~ ranger(
+#         formula = .x ~ .,
+#         data = samples_x,
+#         num.trees = num.trees,
+#         mtry = mtry,
+#         importance = 'permutation',
+#         min.node.size = min.node.size,
+#         max.depth = max.depth,
+#         write.forest = FALSE,
+#         num.threads = params$ranger_threads)$prediction.error,
+#       .options = furrr_options(seed = NULL),
+#     )
+#     
+#     rf_time <- tictoc::toc()
+#     print(error_vec)
+#     error_data <- bind_cols(
+#       params = param_string,
+#       mtry = mtry,
+#       num.trees = num.trees,
+#       min.node.size = min.node.size,
+#       max.depth = max.depth,
+#       time = rf_time$toc - rf_time$tic,
+#       error = mean(error_vec),
+#       error_vec
+#       )
+# 
+#     return(error_data)
+#   }
+# )
+
+# plan(sequential)  
+
+```
+
+## Investigate best parameters
+
+```{r}
+# Plot parameters vs error
+map(
+  c('mtry', 'num.trees', 'min.node.size', 'max.depth'), 
+  ~ ggplot(param_error, aes_string(.x, 'error')) + 
+    geom_point()
+  ) %>%
+  plot_grid(plotlist = .)
+
+# Check top parameters
+top_params <- param_error %>% arrange(error) %>% head(10)
+top_params
+
+# Check top parameter distributions
+top_params %>% pivot_longer(cols = mtry:max.depth, names_to = 'parameter') %>% count(parameter, value)
+```
+
+Based on this, the important hyperparameters are `mtry` and `min.node.size`, which clearly offer better performance when set to 30 and 5 respectively. `num.trees` and `max.depth` do not offer big differences, so are set conservatively to save processing time.
+
+# Run the random forest
+
+```{r}
+set.seed(2021)
+plan(params$future_plan, workers = params$future_threads) # Make map parallel to speed up random forests
+
+for (dynamic_type in params$dynamics){
+  
+  # First, gather the data
+  ## Genome and dynamic data
+  samples_x <- samples %>% 
+    extract2(dynamic_type) %>% 
+    select(genotype, glue("{dynamic_type}projection"), contains("Pred")) %>% 
+    column_to_rownames("genotype")
+  
+  ## Expression data
+  samples_y <- samples %>% 
+    extract2(dynamic_type) %>% 
+    select(contains("WBGene"))
+  
+  ## Optional: Subset to 1 in every 100 genes (for test runs)
+  if (params$subset) {
+    samples_y <- samples_y %>% select(seq(1, ncol(.), 100))
+  }
+  
+  # Start mapping
+  
+  tictoc::tic(glue("Run time for {dynamic_type} RF"))
+  
+  ## Map over each column in samples_y (gene exp), 
+  ## and build random forest linking it to all vars from samples_x (proj+markers)
+  ## (map iterates over columns because data frames are lists of column vectors)
+  rf_objects <-
+    future_map(samples_y,
+               ~ ranger(
+                   formula = .x ~ .,
+                   data = samples_x,
+                   num.trees = 2000,               # set to 1000 from 5000 because all trees in 1/100 stabilised by then
+                   mtry = NULL,                    # takes sqrt of # variables, should tune this
+                   importance = 'permutation',     # alternative: impurity_corrected?
+                   min.node.size = 2,
+                   max.depth = 8,
+                   # always.split.variables = glue('{dynamic_type}projection'),
+                   write.forest = FALSE,
+                   num.threads = params$ranger_threads
+                 ),
+                .options = furrr_options(seed = NULL)
+    )
+  
+  # Simplify results into one data frame with total error and %incmse importance
+  rf_results <-
+    map_dfr(.x = rf_objects,
+            .f = ~ c(prediction.error = .x$prediction.error, importance(.x)),
+            .id = 'gene')
+  
+  tictoc::toc()
+  
+  saveRDS(rf_objects, file = glue("{params$data_dir}/rf_objects_{dynamic_type}.rds"))
+  saveRDS(rf_results, file = glue("{params$data_dir}/rf_results_{dynamic_type}.rds"))
+}
+
+plan(sequential)
+```
+
+```{r}
+# Plotting mse per # of trees included
+# Only saved when using base randomForest
+rf_objects_base <- readRDS(glue("{params$data_dir}/rf_objects_dev_base.rds"))
+ntree_dist <- map_dbl(rf_objects_base, ~which.min(.x$mse)) %>% 
+  enframe() 
+ntree_dist %>% 
+  ggplot() + 
+  geom_histogram(aes(x = value), col = 'black', fill = 'grey') + 
+  theme_bw()
+
+ntree_dist %>% 
+  filter(value > 1000) %>% 
+  pull('name') %>% 
+  extract(rf_objects_base, .) %>% 
+  map(~plot(.x))
+
+# Based on this, can move it back from 5000 to 1000 imo, already hit long tail by then. Maybe 1500/2000
+```
+
+```{r}
+rf_results %>% 
+  select(1:2) %>% 
+  ggplot() +
+  geom_histogram(aes(hsprojection), col = 'black', fill = 'lightgrey')
+```
