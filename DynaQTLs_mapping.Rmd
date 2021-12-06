@@ -7,8 +7,9 @@ params:
   data_dir: 'Data/'
   # Run options
   subset: FALSE
-  hyperparam_check: FALSE
-  dynamics: !r c('dev', 'hs')
+  run_permutation: TRUE
+  run_hyperparam_check: FALSE
+  dynamics: !r c('dev', 'hs', 'rec')
   # Multicore parameters for future/furrr
   future_plan: multisession
   future_threads: 10 # Above 6 gave no clear benefit on local machine combined with ranger = NULL
@@ -72,6 +73,7 @@ load(glue("{params$data_dir}/projection_alldata.rdata"))
 projection_all <- mutate(projection_all, dynamic = tolower(experimentype))
 dim(projection_all)
 ```
+
 
 ### Gene map
 
@@ -140,7 +142,7 @@ for (dynamic_type in params$dynamics){
   ## Genome and dynamic data
   samples_x <- samples %>% 
     extract2(dynamic_type) %>% 
-    select(genotype, glue("{dynamic_type}projection"), contains("Pred")) %>% 
+    select(genotype, glue("{dynamic_type}_RILs_projection"), contains("Pred")) %>% 
     column_to_rownames("genotype")
   
   ## Expression data
@@ -165,12 +167,12 @@ for (dynamic_type in params$dynamics){
                ~ ranger(
                    formula = .x ~ .,
                    data = samples_x,
-                   num.trees = 1000,
+                   num.trees = 2000,
                    mtry = 7,
                    importance = 'permutation',
                    min.node.size = 8,
                    max.depth = 8,
-                   # always.split.variables = glue('{dynamic_type}projection'),
+                   # always.split.variables = glue('{dynamic_type}_RILs_projection'),
                    write.forest = FALSE,
                    num.threads = params$ranger_threads
                  ),
@@ -185,12 +187,81 @@ for (dynamic_type in params$dynamics){
   
   tictoc::toc()
   
-  saveRDS(rf_objects, file = glue("{params$data_dir}/rf_objects_{dynamic_type}.rds"))
-  saveRDS(rf_results, file = glue("{params$data_dir}/rf_results_{dynamic_type}.rds"))
+  saveRDS(rf_objects, file = glue("{params$data_dir}/rf_objects_{dynamic_type}_nodynamic.rds"))
+  saveRDS(rf_results, file = glue("{params$data_dir}/rf_results_{dynamic_type}_nodynamic.rds"))
 }
 
 plan(sequential)
 ```
+
+# Background: permuted forests
+
+To calculate significance of different markers and dynamics for gene expression, we need a baseline/null distribution that represents the variable importances when they are not correlated. To do this, we shuffle the labels, so that the gene markers/development (sample_x) of a sample no longer correlate with its gene expression (sample_y).
+
+```{r}
+set.seed(2021)
+plan(params$future_plan, workers = params$future_threads) # Make map parallel to speed up random forests
+if (params$run_permutation) {
+  for (dynamic_type in params$dynamics) {
+    rf_results_permuted <- map(1:10, function(permutation){
+      
+      # First, gather the data
+      ## Genome and dynamic data
+      samples_x <- samples %>% 
+        extract2(dynamic_type) %>% 
+        select(genotype, glue("{dynamic_type}_RILs_projection"), contains("Pred")) %>% 
+        column_to_rownames("genotype")
+      
+      ## Expression data
+      samples_y <- samples %>% 
+        extract2(dynamic_type) %>% 
+        select(contains("WBGene"))
+      
+      ## Shuffle expression data
+      n_samples <- nrow(samples_y)
+      samples_y <- samples_y[sample(1:n_samples, n_samples),]
+      
+      
+      # Start mapping
+      
+      tictoc::tic(glue("Run time for {dynamic_type} RF, permutation {permutation}"))
+      
+      ## Map over each column in samples_y (gene exp), 
+      ## and build random forest linking it to all vars from samples_x (proj+markers)
+      ## (map iterates over columns because data frames are lists of column vectors)
+      rf_objects <-
+        future_map(samples_y,
+                   ~ ranger(
+                     formula = .x ~ .,
+                     data = samples_x,
+                     num.trees = 2000,
+                     mtry = 7,
+                     importance = 'permutation',
+                     min.node.size = 8,
+                     max.depth = 8,
+                     # always.split.variables = glue('{dynamic_type}projection'),
+                     write.forest = FALSE,
+                     num.threads = params$ranger_threads
+                   ),
+                   .options = furrr_options(seed = NULL)
+        )
+      
+      # Simplify results into one data frame with total error and %incmse importance
+      rf_results <-
+        map_dfr(.x = rf_objects,
+                .f = ~ c(prediction.error = .x$prediction.error, importance(.x)),
+                .id = 'gene')
+      
+      tictoc::toc()
+      return(rf_results)
+    })
+    
+    saveRDS(rf_results_permuted, file = glue("{params$data_dir}/rf_results_{dynamic_type}_permute10.rds"))
+  }
+}
+plan(sequential)
+```
+
 
 # Background: hyperparameter selection
 
@@ -203,9 +274,9 @@ To select the best hyperparameters, we run full grid search. Based on `ranger`'s
 ### Get OOB error for different hyperparameters
 
 ```{r}
-if (params$hyperparam_check & !file.exists(glue("{params$data_dir}/param_error.rds"))){
-  set.seed(2021)
-  plan(params$future_plan, workers = params$future_threads) # Make map parallel to speed up random forests
+set.seed(2021)
+plan(params$future_plan, workers = params$future_threads) # Make map parallel to speed up random forests
+if (params$run_hyperparam_check & !file.exists(glue("{params$data_dir}/param_error.rds"))){
   params_cv <- expand.grid(mtry = floor(exp(log(10)*seq(log10(2),log10(12), length.out = 5))), 
               num.trees = c(1000, 2000),
               min.node.size = c(2, 5, 8), # Compare 2 (prev value) with 5 (default) and 8 (since higher seems better?)
@@ -216,7 +287,7 @@ if (params$hyperparam_check & !file.exists(glue("{params$data_dir}/param_error.r
   # First, gather the data
   samples_x <- samples %>%
     extract2(dynamic_type) %>%
-    select(genotype, glue("{dynamic_type}projection"), contains("Pred")) %>%
+    select(genotype, glue("{dynamic_type}_RILs_projection"), contains("Pred")) %>%
     column_to_rownames("genotype")
   
   samples_y <- samples %>%
@@ -268,7 +339,7 @@ if (params$hyperparam_check & !file.exists(glue("{params$data_dir}/param_error.r
 } else if (file.exists(glue("{params$data_dir}/param_error.rds"))) {
   param_error <- readRDS(glue("{params$data_dir}/param_error.rds"))
 } else {
-  print("Hyperparameter checks are not ran (params$hyperparam_check == False), but saved results (at {params$data_dir}/param_error.rds) can't be found either. No hyperparameter analysis possible...")
+  print("Hyperparameter checks are not ran (params$run_hyperparam_check == False), but saved results (at {params$data_dir}/param_error.rds) can't be found either. No hyperparameter analysis possible...")
 }
 ```
 
@@ -282,16 +353,17 @@ if (exists('param_error')) {
     ~ ggplot(param_error, aes_string(.x, 'error')) + 
       geom_point()
     ) %>%
-    plot_grid(plotlist = .)
+    plot_grid(plotlist = .) %>% 
+    print()
   
   # Check top parameters
   top_params <- param_error %>% arrange(error) %>% head(10)
-  top_params
+  print(top_params)
   
   # Check top parameter distributions
-  top_params %>% pivot_longer(cols = mtry:max.depth, names_to = 'parameter') %>% count(parameter, value)
+  top_params %>% pivot_longer(cols = mtry:max.depth, names_to = 'parameter') %>% count(parameter, value) %>% print()
 }
 ```
 
 
-Based on this, the important hyperparameters are `mtry` and `min.node.size`, which clearly offer better performance when set to 7 and 8 respectively. `num.trees` only shows a slight difference, so this parameter could be adjusted to speed up the process (halving number of trees roughly halves processing time). `max.depth` shows no impact at all in neither time or performance, which might indicate the trees never reach this depth.
+Based on this, the important hyperparameters are `mtry` and `min.node.size`, which clearly offer better performance when set to 7 and 8 respectively. `num.trees` only shows a slight difference, so this parameter could be adjusted to speed up the process (halving number of trees roughly halves processing time), but does offer enough bonus to set to 2000. `max.depth` shows no impact at all in neither time or performance, which might indicate the trees never reach this depth.
