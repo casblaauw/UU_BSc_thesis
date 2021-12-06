@@ -9,3 +9,5 @@ Results/*
 Scriptie.one
 *.docx
 *.html
+*.Rproj
+DynaQTLs.R
