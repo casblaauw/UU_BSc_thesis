@@ -1,0 +1,239 @@
+---
+title: "Dynamic eQTLs during development and heat stress - analysis"
+author: Cas Blaauw
+output: html_document
+params:
+  # Data path
+  data_dir: 'Data'
+  # Run options
+  dynamics: !r c('dev', 'hs')
+
+---
+
+A script to analyse and visualise mapped dynamic eQTLs with random forests.
+
+# Load libraries and data
+
+### Libraries
+
+```{r}
+# Data wrangling
+library(dplyr)
+library(readr)
+
+# Visualisation
+library(ggplot2)
+library(cowplot)
+
+# Do I need these?
+library(gplots)
+library(VennDiagram)
+library(RColorBrewer)
+```
+
+### Colors
+
+```{r}
+devColor <- "#00BA38"
+hsColor <- "#F8766D"
+recColor <- "#619CFF"
+```
+
+### Sample data
+
+```{r}
+samples <- readRDS(glue("{params$data_dir}/samples.rds"))
+```
+
+### Mapping results
+
+```{r}
+imp = list(
+  dev = readRDS(glue("{params$data_dir}/rf_results_dev.rds")),
+  hs = readRDS(glue("{params$data_dir}/rf_results_hs.rds"))
+)
+# Permuted importances
+imp_per = list(
+  dev = readRDS(glue("{params$data_dir}/rf_results_dev_permute10.rds")),
+  hs = readRDS(glue("{params$data_dir}/rf_results_hs_permute10.rds"))
+)
+```
+
+
+### Genome info
+
+Maps the genetic regions/alleles to coordinates on the genome.
+
+```{r}
+mrk <- read_tsv(glue("{params$data_dir}/marker.txt"), show_col_types = FALSE)
+head(mrk)
+dim(mrk)
+```
+
+### Transcriptome info
+
+Maps the expressed genes to coordinates on the genome.
+
+```{r}
+gi <- read_csv(glue("{params$data_dir}/WormGenes_all.csv"), col_names = c("gene", "name", "start", "end", "chr"), show_col_types = FALSE)
+head(gi)
+dim(gi)
+```
+
+
+# Analyse significance
+
+
+```{r}
+imp_per_full <- map(imp_per, ~bind_rows(.x, .id = 'run'))
+empirical_pval <- Vectorize(
+  function(val, distribution) {
+    mean(abs(val) > abs(distribution))
+  }, 
+  vectorize.args = 'val')
+
+imp <- imap(imp, function(df, proj) {
+  proj_name <- glue('{proj}projection')
+  df %>%
+    mutate(
+      p_value = empirical_pval(.data[[proj_name]], imp_per_full[[proj]][[proj_name]]),
+      p_val_adj = p.adjust(p_value)
+      )
+})
+```
+
+```{r}
+# Look at difference between permuted distribution and results
+bind_rows(results = imp$dev, distribution = imp_per_full$dev, .id = 'permuted') %>% 
+  ggplot(aes(x = devprojection, fill = permuted)) + 
+  geom_histogram(binwidth = 0.001) + 
+  xlim(c(-0.02, 0.02))
+```
+
+
+# Plotting functions
+
+```{r}
+### Old plotting functions
+
+## Cis-trans plots
+#Function for a standard cis-trans QTL plot
+qtlCTplot <- function(df, color = "#000000") {
+  ggplot(df, aes(mrkstart, genestart)) +
+    geom_point(alpha = 0.5, color = color) +
+    facet_grid(genechr ~ mrkchr) +
+    theme_bw() +
+    theme(
+      panel.spacing = unit(0.1, "lines"),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "none"
+    ) +
+    labs(x = "Marker position", y = "Gene position")
+}
+
+#Function for cis-trans plots of different datasets, splits on 'compare'
+qtlCompare <- function(df, compare) {
+  ggplot(df, aes_string("mrkstart", "genestart", col = compare)) +
+    geom_point(alpha = 0.3) +
+    facet_grid(genechr ~ mrkchr) +
+    theme_bw() +
+    theme(
+      panel.spacing = unit(0.1, "lines"),
+      axis.text = element_blank(),
+      axis.ticks = element_blank()
+    ) +
+    scale_colour_manual(values = c(devColor, hsColor, recColor)) +
+    labs(x = "Marker position", y = "Gene position")
+}
+
+## Hotspot plots
+#Function to plot a histogram of distant eQTLs to find hotspots
+qtlHotspot <- function(df, color = "grey35") {
+  df <- filter(df, type == "distant")
+  ggplot(data = df, aes(mrkstart)) +
+    geom_histogram(fill = color, binwidth = 1e6) + #Not sure about best binwidth
+    facet_wrap( ~ mrkchr, nrow = 1) +
+    theme_bw() +
+    theme(
+      panel.spacing = unit(0.1, "lines"),
+      #Mimic c-tplot style
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      legend.position = "none"
+    ) +
+    labs(x = "Marker position", y = "#eQTLs") +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
+}
+
+#Function to plot a distant eQTLs histogram with multiple datasets
+qtlCompHotspot <- function(df, compare) {
+  df <- filter(df, type == "distant")
+  ggplot(data = df, aes_string("mrkstart", fill = compare)) +
+    geom_histogram(binwidth = 1e6) + #Not sure about best binwidth
+    facet_wrap( ~ mrkchr, nrow = 1) +
+    theme_bw() +
+    theme(
+      panel.spacing = unit(0.1, "lines"),
+      #Mimic c-tplot style
+      axis.text = element_blank(),
+      axis.ticks = element_blank()
+    ) +
+    labs(x = "Marker position", y = "#eQTLs") +
+    scale_fill_manual(values = c(devColor, hsColor, recColor)) +
+    scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) #Actually start from 0
+}
+
+
+## Combined cis-trans and hotspot plots
+qtlBoth <- function(df) {
+  plot_grid(
+    qtlCTplot(df) + theme(
+      panel.grid.minor = element_blank(),
+      plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), "cm", ),
+      axis.title.x = element_blank()
+    ),
+    qtlHotspot(df) + theme(
+      panel.grid.minor.x = element_blank(),
+      plot.margin = unit(c(0, 0, 0.2, 0), "cm"),
+      strip.background = element_blank(),
+      strip.text.x = element_blank()
+    ),
+    ncol = 1,
+    align = 'v',
+    axis = 'lr',
+    rel_heights = c(3, 1)
+  )
+}
+
+
+qtlCompBoth <- function(df, compare) {
+  plot_grid(
+    qtlCompare(df, compare) + theme(
+      panel.grid.minor = element_blank(),
+      plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), "cm", ),
+      axis.title.x = element_blank(),
+      legend.title = element_text(size = 11)
+    ) +
+      guides(color = guide_legend(
+        override.aes = list(
+          size = 7,
+          alpha = 1,
+          shape = "square"
+        )
+      )),
+    qtlCompHotspot(df, compare) + theme(
+      panel.grid.minor.x = element_blank(),
+      plot.margin = unit(c(0, 0, 0.2, 0), "cm"),
+      strip.background = element_blank(),
+      strip.text.x = element_blank(),
+      legend.position = "none"
+    ),
+    ncol = 1,
+    align = 'v',
+    axis = 'lr',
+    rel_heights = c(4, 1)
+  )
+}
+```
+
